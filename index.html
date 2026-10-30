@@ -48,7 +48,7 @@ tbody tr:hover{background:#f8fafc}.num{text-align:right}
 .badge{display:inline-block;padding:3px 10px;border-radius:12px;font-size:11px;font-weight:700}
 .badge.green{background:#e4f7ed;color:var(--green)}.badge.red{background:#feeceb;color:var(--red)}
 .badge.amber{background:#fff2d5;color:var(--amber)}.badge.blue{background:#e8f1ff;color:#175cd3}.badge.gray{background:#f2f4f7;color:#667085}
-.alert{padding:12px 16px;border-radius:8px;margin-bottom:16px;font-size:13px}
+.alert{padding:12px 16px;border-radius:8px;margin-bottom:16px;font-size:13px;font-weight:bold}
 .alert.success{background:#e4f7ed;color:#087443;border:1px solid #a6e5c1}
 .alert.error{background:#feeceb;color:#b42318;border:1px solid #f7b4b0}
 .empty{padding:30px;text-align:center;color:var(--muted);font-style:italic}
@@ -126,7 +126,6 @@ const esc = t => String(t ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt
 const uid = () => db.ref().push().key;
 const now = () => Date.now();
 
-// Fungsi Cek Admin
 function isAdmin() { return S.user && S.user.role === 'ADMIN'; }
 
 function badge(s) {
@@ -171,8 +170,8 @@ function handleImportCSV(e, menuType) {
           count++;
         }
       }
-      flash(`Berhasil import ${count} data.`);
       renderApp();
+      flash(`Berhasil import ${count} data.`);
     }
   });
 }
@@ -226,7 +225,6 @@ function initDataListeners() {
 function renderApp() {
   if (!S.user) return;
   
-  // MENU KHUSUS ADMIN
   let navItems = [['dashboard','▦','Dashboard']];
   
   if (isAdmin()) {
@@ -240,7 +238,6 @@ function renderApp() {
     navItems.push(['users','⚿','Pengguna']);
     navItems.push(['settings','⚙','Profil Perusahaan']);
   } else {
-    // Menu untuk selain Admin (Hanya bisa buat permintaan)
     navItems.push(['requests','✚','Buat Permintaan']);
   }
 
@@ -262,7 +259,6 @@ function nav(p) { S.page = p; S.editing = null; renderApp(); }
 
 function renderPage() {
   const c = $('#content');
-  // Pengecekan Keamanan (Jika user bukan Admin mencoba akses paksa halaman Admin)
   const adminOnlyPages = ['items', 'assets', 'approvals', 'workorders', 'purchases', 'departments', 'users', 'settings'];
   if (adminOnlyPages.includes(S.page) && !isAdmin()) {
     c.innerHTML = `<div class="panel empty" style="color:var(--red); font-weight:bold; font-size:18px;">⛔ AKSES DITOLAK. Halaman ini hanya untuk Admin.</div>`;
@@ -282,7 +278,7 @@ function renderPage() {
 }
 
 /* ============================================================
-   6. HALAMAN PROFIL PERUSAHAAN
+   6. PROFIL PERUSAHAAN
    ============================================================ */
 function pageSettings() {
   const c = S.settings.company || {};
@@ -301,7 +297,7 @@ function pageSettings() {
 async function saveCompany(e) {
   e.preventDefault();
   await db.ref('settings/company').set({ name: $('#comp_name').value, address: $('#comp_address').value, phone: $('#comp_phone').value, web: $('#comp_web').value });
-  flash('Profil Perusahaan disimpan.'); renderApp();
+  renderApp(); flash('Data profil perusahaan berhasil disimpan.');
 }
 
 /* ============================================================
@@ -318,7 +314,7 @@ function pageItems() {
       </div>
     </div>
     <div class="grid-two">
-      <section class="panel"><div class="panel-head"><h2>Tambah Barang</h2></div>
+      <section class="panel"><div class="panel-head"><h2>${S.editing ? 'Edit' : 'Tambah'} Barang</h2></div>
         <form class="form-grid" onsubmit="saveItem(event)">
           <input type="hidden" id="item_id" value="${S.editing||''}">
           <label>Kode<input id="item_code" required value="${esc(S.editing?S.items[S.editing].item_code:'')}"></label>
@@ -327,7 +323,7 @@ function pageItems() {
           ${!S.editing ? '<label>Saldo Awal (Qty)<input type="number" id="item_stock" value="0" required></label>' : ''}
           <div class="form-actions">
             ${S.editing ? '<button type="button" class="btn btn-light" onclick="nav(\'items\')">Batal</button>' : ''}
-            <button class="btn btn-primary">Simpan Barang</button>
+            <button class="btn btn-primary">${S.editing ? 'Update Barang' : 'Simpan Barang'}</button>
           </div>
         </form>
       </section>
@@ -354,58 +350,98 @@ async function saveItem(e) {
   const data = { item_code: $('#item_code').value, item_name: $('#item_name').value, unit: $('#item_unit').value };
   if (!S.editing) data.stock = parseFloat($('#item_stock').value) || 0;
   await db.ref('items/' + id).update(data);
-  flash('Barang tersimpan.'); nav('items');
+  nav('items'); // Menutup form edit dan me-refresh tabel
+  flash('Data Barang berhasil disimpan.');
 }
 function editItem(id) { S.editing = id; renderApp(); }
-async function delItem(id) { if(confirm('Hapus barang ini?')) { await db.ref('items/' + id).remove(); flash('Barang dihapus.'); } }
+async function delItem(id) { if(confirm('Hapus barang ini?')) { await db.ref('items/' + id).remove(); renderApp(); flash('Barang dihapus.'); } }
 
 /* ============================================================
-   8. MASTER ASET & DEPARTEMEN
+   8. MASTER ASET (DENGAN EDIT & SIMPAN)
    ============================================================ */
 function pageAssets() {
   const rows = Object.entries(S.assets);
+  const isEdit = S.page === 'assets' && S.editing;
+  const a = isEdit ? S.assets[S.editing] : {asset_code:'', asset_name:''};
+  
   return `
     <div class="page-head"><div><div class="eyebrow">MASTER DATA</div><h1>Master Asset</h1></div></div>
-    <section class="panel"><div class="panel-head"><h2>Tambah Asset</h2></div>
+    <section class="panel"><div class="panel-head"><h2>${isEdit ? 'Edit' : 'Tambah'} Asset</h2></div>
       <form class="form-grid" onsubmit="saveAsset(event)">
-        <label>Kode<input id="asset_code" required></label><label>Nama Asset<input id="asset_name" required></label>
-        <div class="form-actions"><button class="btn btn-primary">Simpan</button></div>
+        <input type="hidden" id="asset_id" value="${S.editing||''}">
+        <label>Kode Asset<input id="asset_code" required value="${esc(a.asset_code)}"></label>
+        <label>Nama Asset<input id="asset_name" required value="${esc(a.asset_name)}"></label>
+        <div class="form-actions">
+          ${isEdit ? '<button type="button" class="btn btn-light" onclick="nav(\'assets\')">Batal</button>' : ''}
+          <button class="btn btn-primary">${isEdit ? 'Update Asset' : 'Simpan Asset'}</button>
+        </div>
       </form>
     </section>
     <section class="panel"><div class="table-wrap"><table><thead><tr><th>Kode</th><th>Nama</th><th>Aksi</th></tr></thead><tbody>
-      ${rows.map(([id,a]) => `<tr><td><strong>${esc(a.asset_code)}</strong></td><td>${esc(a.asset_name)}</td>
-      <td><button class="btn btn-danger btn-sm" onclick="db.ref('assets/${id}').remove()">Hapus</button></td></tr>`).join('')}
+      ${rows.map(([id,a]) => `<tr>
+        <td><strong>${esc(a.asset_code)}</strong></td><td>${esc(a.asset_name)}</td>
+        <td>
+          <button class="btn btn-light btn-sm" onclick="editAsset('${id}')">Edit</button>
+          <button class="btn btn-danger btn-sm" onclick="delAsset('${id}')">Hapus</button>
+        </td>
+      </tr>`).join('') || '<tr><td colspan="3" class="empty">Kosong.</td></tr>'}
     </tbody></table></div></section>`;
 }
+
 async function saveAsset(e) {
   e.preventDefault();
-  await db.ref('assets/' + uid()).set({ asset_code: $('#asset_code').value, asset_name: $('#asset_name').value });
-  flash('Asset tersimpan.'); renderApp();
+  const id = $('#asset_id').value || uid();
+  await db.ref('assets/' + id).update({ asset_code: $('#asset_code').value, asset_name: $('#asset_name').value });
+  nav('assets'); // Menutup form edit dan me-refresh tabel
+  flash('Data Asset berhasil disimpan.');
 }
+function editAsset(id) { S.editing = id; renderApp(); }
+async function delAsset(id) { if(confirm('Hapus asset ini?')) { await db.ref('assets/' + id).remove(); renderApp(); flash('Asset dihapus.'); } }
 
+/* ============================================================
+   9. MASTER DEPARTEMEN (DENGAN EDIT & SIMPAN)
+   ============================================================ */
 function pageDepartments() {
   const rows = Object.entries(S.departments);
+  const isEdit = S.page === 'departments' && S.editing;
+  const d = isEdit ? S.departments[S.editing] : {code:'', name:''};
+
   return `
     <div class="page-head"><div><div class="eyebrow">MASTER DATA</div><h1>Master Departemen</h1></div></div>
-    <section class="panel"><div class="panel-head"><h2>Tambah Departemen</h2></div>
+    <section class="panel"><div class="panel-head"><h2>${isEdit ? 'Edit' : 'Tambah'} Departemen</h2></div>
       <form class="form-grid" onsubmit="saveDept(event)">
-        <label>Kode<input id="dept_code" required placeholder="ENG"></label><label>Nama Departemen<input id="dept_name" required placeholder="Engineering"></label>
-        <div class="form-actions"><button class="btn btn-primary">Simpan</button></div>
+        <input type="hidden" id="dept_id" value="${S.editing||''}">
+        <label>Kode<input id="dept_code" required placeholder="ENG" value="${esc(d.code)}"></label>
+        <label>Nama Departemen<input id="dept_name" required placeholder="Engineering" value="${esc(d.name)}"></label>
+        <div class="form-actions">
+          ${isEdit ? '<button type="button" class="btn btn-light" onclick="nav(\'departments\')">Batal</button>' : ''}
+          <button class="btn btn-primary">${isEdit ? 'Update Departemen' : 'Simpan Departemen'}</button>
+        </div>
       </form>
     </section>
     <section class="panel"><div class="table-wrap"><table><thead><tr><th>Kode</th><th>Nama</th><th>Aksi</th></tr></thead><tbody>
-      ${rows.map(([id,d]) => `<tr><td><strong>${esc(d.code)}</strong></td><td>${esc(d.name)}</td>
-      <td><button class="btn btn-danger btn-sm" onclick="db.ref('departments/${id}').remove()">Hapus</button></td></tr>`).join('')}
+      ${rows.map(([id,dept]) => `<tr>
+        <td><strong>${esc(dept.code)}</strong></td><td>${esc(dept.name)}</td>
+        <td>
+          <button class="btn btn-light btn-sm" onclick="editDept('${id}')">Edit</button>
+          <button class="btn btn-danger btn-sm" onclick="delDept('${id}')">Hapus</button>
+        </td>
+      </tr>`).join('') || '<tr><td colspan="3" class="empty">Kosong.</td></tr>'}
     </tbody></table></div></section>`;
 }
+
 async function saveDept(e) {
   e.preventDefault();
-  await db.ref('departments/' + uid()).set({ code: $('#dept_code').value.toUpperCase(), name: $('#dept_name').value });
-  flash('Departemen tersimpan.'); renderApp();
+  const id = $('#dept_id').value || uid();
+  await db.ref('departments/' + id).update({ code: $('#dept_code').value.toUpperCase(), name: $('#dept_name').value });
+  nav('departments'); // Menutup form edit dan me-refresh tabel
+  flash('Data Departemen berhasil disimpan.');
 }
+function editDept(id) { S.editing = id; renderApp(); }
+async function delDept(id) { if(confirm('Hapus departemen ini?')) { await db.ref('departments/' + id).remove(); renderApp(); flash('Departemen dihapus.'); } }
 
 /* ============================================================
-   9. WORK ORDER & PEMBELIAN
+   10. WORK ORDER & PEMBELIAN
    ============================================================ */
 function pageWorkOrders() {
   const rows = Object.entries(S.workorders).sort((a,b) => (b[1].created_at||0) - (a[1].created_at||0));
@@ -469,12 +505,12 @@ async function saveWO(e, id) {
   e.preventDefault();
   const status = $('#wo_status_'+id).value;
   await db.ref('workorders/' + id).update({ status, diagnosis: $('#wo_diag_'+id).value, action_taken: $('#wo_act_'+id).value, updated_at: now() });
-  flash('WO tersimpan.'); renderApp();
+  flash('Data Work Order berhasil disimpan.'); renderApp();
 }
 async function requestPurchase(e, woId) {
   e.preventDefault();
   await db.ref('purchases/' + uid()).set({ wo_id: woId, item_name: $('#pur_item_'+woId).value, qty: $('#pur_qty_'+woId).value, status: 'PENDING', requester_name: S.user.name, created_at: now() });
-  flash('Pengajuan pembelian terkirim.'); renderApp();
+  flash('Pengajuan pembelian berhasil dikirim.'); renderApp();
 }
 function pagePurchases() {
   const rows = Object.entries(S.purchases);
@@ -485,7 +521,7 @@ function pagePurchases() {
 }
 
 /* ============================================================
-   10. MANAJEMEN USER (ADMIN ONLY) & APPROVAL
+   11. MANAJEMEN USER & APPROVAL
    ============================================================ */
 function pageUsers() {
   const rows = Object.entries(S.users);
@@ -566,7 +602,7 @@ async function createNewUser(e) {
       department_id: $('#new_dept').value || null, is_active: true 
     });
     await secApp.auth().signOut(); await secApp.delete();
-    flash('Akun berhasil dibuat.'); e.target.reset();
+    flash('Akun pengguna berhasil dibuat.'); e.target.reset();
   } catch (err) { flash(err.message, 'error'); }
   btn.disabled = false;
 }
@@ -590,16 +626,15 @@ async function updateUser(e) {
     role: $('#edit_role').value,
     department_id: $('#edit_dept').value || null
   });
-  flash('Data pengguna diperbarui.');
   $('#editUserPanel').style.display = 'none';
-  renderApp();
+  renderApp(); flash('Data pengguna berhasil diperbarui.');
 }
 
 async function deleteUser(uid) {
   if (uid === S.user.uid) return alert('Anda tidak bisa menghapus akun Anda sendiri.');
   if (!confirm('Hapus pengguna ini? Pengguna tidak akan bisa login lagi.')) return;
   await db.ref('users/' + uid).remove();
-  flash('Pengguna dihapus (Akses dicabut).');
+  renderApp(); flash('Pengguna berhasil dihapus (Akses dicabut).');
 }
 
 function pageApprovals() {
@@ -620,7 +655,7 @@ async function decideApproval(logId, dec) {
   await db.ref('approval_logs/' + logId).update({ decision: dec, decided_at: now() });
   await db.ref('requests/' + log.request_id).update({status: dec});
   if (dec === 'APPROVED') await db.ref('workorders/' + uid()).set({ wo_no: 'WO-'+Date.now().toString().slice(-6), request_id: log.request_id, status: 'OPEN', created_at: now() });
-  flash('Approval disimpan.'); renderApp();
+  renderApp(); flash('Keputusan approval berhasil disimpan.');
 }
 
 function pageDashboard() {
@@ -646,7 +681,7 @@ function pageRequests() {
 async function saveRequest(e) {
   e.preventDefault();
   await db.ref('requests/' + uid()).set({ request_no: 'PR-'+Date.now().toString().slice(-6), description: $('#req_desc').value, requester_name: S.user.name, status: 'PENDING', created_at: now() });
-  flash('Permintaan dibuat.'); renderApp();
+  renderApp(); flash('Permintaan berhasil dibuat.');
 }
 </script>
 </body>
