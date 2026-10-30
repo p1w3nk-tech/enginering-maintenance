@@ -3,7 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Engineering Maintenance — Work Order System</title>
+<title>Engineering Maintenance — Admin System</title>
+<!-- Library untuk Export Excel, PDF, dan Import CSV -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
+
 <style>
 :root{--bg:#f4f6fa;--panel:#fff;--border:#e5e9f0;--text:#1d2939;--muted:#667085;--navy:#13253f;--blue:#2463eb;--green:#087443;--amber:#935500;--red:#b42318;}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -61,6 +66,14 @@ tbody tr:hover{background:#f8fafc}.num{text-align:right}
 .login-card p{text-align:center;color:var(--muted);font-size:12px;margin-bottom:24px}
 .login-card .btn{width:100%;justify-content:center;margin-top:20px;padding:11px}
 .muted{color:var(--muted)}.hint{font-size:12px;color:var(--muted);margin-bottom:10px}
+/* CSS Khusus Print */
+@media print {
+  body { background: #fff; font-size: 12px; }
+  .topbar, .sidebar, .btn, .no-print { display: none !important; }
+  .content { padding: 0; }
+  .layout { display: block; }
+  .panel { border: none; box-shadow: none; padding: 0; }
+}
 </style>
 </head>
 <body>
@@ -88,8 +101,6 @@ const firebaseConfig = {
 if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.database();
-
-// Domain email semu untuk Login pakai Username
 const FAKE_EMAIL_DOMAIN = "@app.local";
 
 /* ============================================================
@@ -97,31 +108,29 @@ const FAKE_EMAIL_DOMAIN = "@app.local";
    ============================================================ */
 const S = {
   user: null, users: {}, departments: {}, items: {}, assets: {},
-  requests: {}, workorders: {}, purchases: {}, logs: {},
+  requests: {}, workorders: {}, purchases: {}, logs: {}, settings: {},
   page: 'dashboard', editing: null
 };
 
 const ROLES = {
-  ADMIN: 'Admin',
-  WAREHOUSE: 'Gudang',
-  REQUESTER: 'Pemohon',
-  HEAD_DEPT: 'Kepala Departemen',
-  ENG_SUPERVISOR: 'Supervisor Engineering',
-  ENG_MANAGER: 'Kepala Engineering',
-  DIRECTOR: 'Direktur'
+  ADMIN: 'Admin', WAREHOUSE: 'Gudang', REQUESTER: 'Pemohon',
+  HEAD_DEPT: 'Kepala Departemen', ENG_SUPERVISOR: 'Supervisor Engineering',
+  ENG_MANAGER: 'Kepala Engineering', DIRECTOR: 'Direktur'
 };
 
 /* ============================================================
-   3. UTILITAS & RBAC (Hak Akses)
+   3. UTILITAS & RBAC
    ============================================================ */
 const $ = (s, r=document) => r.querySelector(s);
 const esc = t => String(t ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const uid = () => db.ref().push().key;
 const now = () => Date.now();
-const fmtDate = ts => ts ? new Date(ts).toLocaleDateString('id-ID', {day:'2-digit',month:'short',year:'numeric'}) : '—';
+
+// Fungsi Cek Admin
+function isAdmin() { return S.user && S.user.role === 'ADMIN'; }
 
 function badge(s) {
-  const map = {APPROVED:'green',COMPLETED:'green',REJECTED:'red',CANCELLED:'red',PENDING:'amber',REVISION:'amber',WAITING_PARTS:'amber',IN_PROGRESS:'blue',OPEN:'blue',PROGRESS:'blue'};
+  const map = {APPROVED:'green',COMPLETED:'green',REJECTED:'red',PENDING:'amber',REVISION:'amber',IN_PROGRESS:'blue',OPEN:'blue'};
   return `<span class="badge ${map[s]||'gray'}">${esc(s||'').replace(/_/g,' ')}</span>`;
 }
 function flash(msg, type='success') {
@@ -129,23 +138,55 @@ function flash(msg, type='success') {
   const main = $('.content') || $('#app'); main.prepend(el);
   setTimeout(() => el.remove(), 4000);
 }
-function hasRole(...roles) { return S.user && (roles.includes(S.user.role) || S.user.role === 'ADMIN'); }
-function stageLabel(s) { return {HEAD_DEPARTMENT:'Kepala Dept', ENGINEERING_SUPERVISOR:'Spv Eng', ENGINEERING_MANAGER:'Kepala Eng', DIRECTOR:'Direktur'}[s] || s; }
+
+// UTILITY EXPORT & PRINT
+function printTable(elementId, title) {
+  const content = document.getElementById(elementId).outerHTML;
+  const win = window.open('', '_blank');
+  win.document.write(`<html><head><title>${title}</title>
+    <style>table{width:100%;border-collapse:collapse}th,td{border:1px solid #ccc;padding:8px;text-align:left}th{background:#f4f4f4}</style>
+    </head><body><h2>${title}</h2>${content}<script>window.onload=()=>window.print()<\/script></body></html>`);
+  win.document.close();
+}
+function exportExcel(tableId, filename) {
+  const table = document.getElementById(tableId);
+  const wb = XLSX.utils.table_to_book(table, {sheet:"Sheet1"});
+  XLSX.writeFile(wb, filename + ".xlsx");
+}
+function exportPDF(elementId, filename) {
+  const element = document.getElementById(elementId);
+  html2pdf().from(element).set({ margin: 10, filename: filename + '.pdf', image: { type: 'jpeg', quality: 0.98 }, html2canvas: { scale: 2 }, jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' } }).save();
+}
+function handleImportCSV(e, menuType) {
+  const file = e.target.files[0];
+  if (!file) return;
+  Papa.parse(file, {
+    header: true, skipEmptyLines: true,
+    complete: async function(results) {
+      let count = 0;
+      for (const row of results.data) {
+        const id = uid();
+        if (menuType === 'items' && row.item_name) {
+          await db.ref('items/'+id).set({ item_code: row.item_code, item_name: row.item_name, unit: row.unit||'PCS', stock: parseInt(row.stock)||0 });
+          count++;
+        }
+      }
+      flash(`Berhasil import ${count} data.`);
+      renderApp();
+    }
+  });
+}
 
 /* ============================================================
-   4. AUTH (LOGIN PAKAI USERNAME)
+   4. AUTH & INIT
    ============================================================ */
 auth.onAuthStateChanged(async user => {
   if (!user) { S.user = null; renderLogin(); return; }
   const snap = await db.ref('users/' + user.uid).once('value');
   const profile = snap.val();
-  
-  if (!profile) {
-    auth.signOut(); return;
-  } else {
-    if (!profile.is_active) { await auth.signOut(); alert('Akun Anda dinonaktifkan oleh Admin.'); return; }
-    S.user = {uid: user.uid, ...profile};
-  }
+  if (!profile) { auth.signOut(); return; }
+  if (!profile.is_active) { await auth.signOut(); alert('Akun dinonaktifkan.'); return; }
+  S.user = {uid: user.uid, ...profile};
   initDataListeners();
   renderApp();
 });
@@ -155,43 +196,15 @@ function renderLogin() {
     <div class="login-wrap"><div class="login-card">
       <div class="login-logo">⚙</div><h1>Engineering Maintenance</h1><p>Work Order · Permintaan · Stok</p>
       <form id="loginForm">
-        <label>Username (Nama)</label><input type="text" name="username" required autocomplete="username" placeholder="cth: budi">
-        <label>Password</label><input type="password" name="password" required minlength="6" autocomplete="current-password">
+        <label>Username</label><input type="text" name="username" required placeholder="cth: budi">
+        <label>Password</label><input type="password" name="password" required>
         <button class="btn btn-primary" type="submit">Masuk</button>
       </form>
-      <p class="muted" style="margin-top:16px;text-align:center;font-size:11px">Belum punya akun? <a href="#" id="showRegister" style="color:var(--blue)">Daftar</a></p>
     </div></div>`;
-    
   $('#loginForm').addEventListener('submit', async e => {
     e.preventDefault();
-    const uname = e.target.username.value.trim().toLowerCase();
-    const email = uname + FAKE_EMAIL_DOMAIN; // Ubah username jadi email semu
-    
-    try { 
-      await auth.signInWithEmailAndPassword(email, e.target.password.value); 
-    } catch (err) { 
-      alert('Login gagal: Username atau Password salah.'); 
-    }
-  });
-
-  $('#showRegister').addEventListener('click', async e => {
-    e.preventDefault();
-    const name = prompt('Nama Lengkap:'); 
-    const uname = prompt('Username (tanpa spasi/tanda khusus):');
-    const pw = prompt('Password (min 6 karakter):');
-    
-    if (!name || !uname || !pw) return;
-    const email = uname.toLowerCase() + FAKE_EMAIL_DOMAIN;
-    
-    try {
-      const cred = await auth.createUserWithEmailAndPassword(email, pw);
-      // Default role saat daftar adalah REQUESTER (Pemohon)
-      await db.ref('users/' + cred.user.uid).set({ 
-        name: name, username: uname.toLowerCase(), role: 'REQUESTER', department_id: null, is_active: true, created_at: now() 
-      });
-    } catch (err) { 
-      alert('Registrasi gagal: Username mungkin sudah dipakai.'); 
-    }
+    try { await auth.signInWithEmailAndPassword(e.target.username.value.toLowerCase() + FAKE_EMAIL_DOMAIN, e.target.password.value); } 
+    catch (err) { alert('Login gagal: Username atau Password salah.'); }
   });
 }
 
@@ -207,28 +220,37 @@ function initDataListeners() {
   db.ref('purchases').on('value', s => { S.purchases = s.val() || {}; if (S.user) renderApp(); });
   db.ref('approval_logs').on('value', s => { S.logs = s.val() || {}; if (S.user) renderApp(); });
   db.ref('users').on('value', s => { S.users = s.val() || {}; if (S.user) renderApp(); });
+  db.ref('settings').on('value', s => { S.settings = s.val() || {}; if (S.user) renderApp(); });
 }
 
 function renderApp() {
   if (!S.user) return;
   
-  // Daftar Menu dinamis berdasarkan Role
+  // MENU KHUSUS ADMIN
   let navItems = [['dashboard','▦','Dashboard']];
-  if (hasRole('WAREHOUSE', 'ADMIN')) navItems.push(['items','▤','Master Barang']);
-  if (hasRole('WAREHOUSE', 'ENG_SUPERVISOR', 'ENG_MANAGER', 'ADMIN')) navItems.push(['assets','⚙','Master Asset']);
-  navItems.push(['requests','✚','Permintaan']);
-  navItems.push(['approvals','✓','Approval']);
-  navItems.push(['workorders','⚒','Work Order']);
-  if (hasRole('ADMIN')) navItems.push(['departments','🏢','Departemen']);
-  if (hasRole('ADMIN')) navItems.push(['users','⚿','Pengguna']);
+  
+  if (isAdmin()) {
+    navItems.push(['items','▤','Master Barang']);
+    navItems.push(['assets','⚙','Master Asset']);
+    navItems.push(['requests','✚','Permintaan']);
+    navItems.push(['approvals','✓','Approval']);
+    navItems.push(['workorders','⚒','Work Order']);
+    navItems.push(['purchases','🛒','Pembelian']);
+    navItems.push(['departments','🏢','Departemen']);
+    navItems.push(['users','⚿','Pengguna']);
+    navItems.push(['settings','⚙','Profil Perusahaan']);
+  } else {
+    // Menu untuk selain Admin (Hanya bisa buat permintaan)
+    navItems.push(['requests','✚','Buat Permintaan']);
+  }
 
   $('#app').innerHTML = `
-    <header class="topbar">
-      <div class="brand">⚙ Engineering Maintenance<small>Firebase Connected</small></div>
+    <header class="topbar no-print">
+      <div class="brand">⚙ Engineering Maintenance<small>Admin System</small></div>
       <div class="userbox"><span>${esc(S.user.name)}<small>${esc(ROLES[S.user.role]||S.user.role)}</small></span><button class="btn btn-light btn-sm" onclick="auth.signOut()">Keluar</button></div>
     </header>
     <div class="layout">
-      <aside class="sidebar">
+      <aside class="sidebar no-print">
         ${navItems.map(([k, ic, lbl]) => `<a class="${S.page===k?'active':''}" onclick="nav('${k}')"><span>${ic}</span><span>${lbl}</span></a>`).join('')}
       </aside>
       <main class="content" id="content"></main>
@@ -240,72 +262,119 @@ function nav(p) { S.page = p; S.editing = null; renderApp(); }
 
 function renderPage() {
   const c = $('#content');
+  // Pengecekan Keamanan (Jika user bukan Admin mencoba akses paksa halaman Admin)
+  const adminOnlyPages = ['items', 'assets', 'approvals', 'workorders', 'purchases', 'departments', 'users', 'settings'];
+  if (adminOnlyPages.includes(S.page) && !isAdmin()) {
+    c.innerHTML = `<div class="panel empty" style="color:var(--red); font-weight:bold; font-size:18px;">⛔ AKSES DITOLAK. Halaman ini hanya untuk Admin.</div>`;
+    return;
+  }
+
   if (S.page === 'dashboard') c.innerHTML = pageDashboard();
   else if (S.page === 'items') c.innerHTML = pageItems();
   else if (S.page === 'assets') c.innerHTML = pageAssets();
   else if (S.page === 'requests') c.innerHTML = pageRequests();
   else if (S.page === 'approvals') c.innerHTML = pageApprovals();
   else if (S.page === 'workorders') c.innerHTML = pageWorkOrders();
+  else if (S.page === 'purchases') c.innerHTML = pagePurchases();
   else if (S.page === 'departments') c.innerHTML = pageDepartments();
   else if (S.page === 'users') c.innerHTML = pageUsers();
+  else if (S.page === 'settings') c.innerHTML = pageSettings();
 }
 
 /* ============================================================
-   6. DASHBOARD
+   6. HALAMAN PROFIL PERUSAHAAN
    ============================================================ */
-function pageDashboard() {
-  const reqCount = Object.keys(S.requests).length;
-  const pending = Object.values(S.logs).filter(l => l.decision === 'PENDING').length;
-  const activeWo = Object.values(S.workorders).filter(w => ['OPEN','IN_PROGRESS'].includes(w.status)).length;
-  
+function pageSettings() {
+  const c = S.settings.company || {};
   return `
-    <div class="page-head"><div><div class="eyebrow">OVERVIEW</div><h1>Dashboard</h1></div></div>
-    <div class="metrics">
-      <div class="metric"><div class="metric-icon blue">▤</div><div><div class="metric-label">Total Permintaan</div><div class="metric-value">${reqCount}</div></div></div>
-      <div class="metric"><div class="metric-icon amber">✓</div><div><div class="metric-label">Approval Pending</div><div class="metric-value">${pending}</div></div></div>
-      <div class="metric"><div class="metric-icon purple">⚒</div><div><div class="metric-label">WO Aktif</div><div class="metric-value">${activeWo}</div></div></div>
-    </div>`;
+    <div class="page-head"><div><div class="eyebrow">PENGATURAN</div><h1>Profil Perusahaan</h1></div></div>
+    <section class="panel">
+      <form class="form-grid" onsubmit="saveCompany(event)">
+        <label class="span-2">Nama Perusahaan<input id="comp_name" value="${esc(c.name||'')}" required></label>
+        <label class="span-2">Alamat Lengkap<input id="comp_address" value="${esc(c.address||'')}" required></label>
+        <label>Telepon<input id="comp_phone" value="${esc(c.phone||'')}"></label>
+        <label>Website<input id="comp_web" value="${esc(c.web||'')}"></label>
+        <div class="form-actions"><button class="btn btn-primary">Simpan Profil</button></div>
+      </form>
+    </section>`;
+}
+async function saveCompany(e) {
+  e.preventDefault();
+  await db.ref('settings/company').set({ name: $('#comp_name').value, address: $('#comp_address').value, phone: $('#comp_phone').value, web: $('#comp_web').value });
+  flash('Profil Perusahaan disimpan.'); renderApp();
 }
 
 /* ============================================================
-   7. MASTER BARANG & ASET (Khusus Admin & Gudang)
+   7. MASTER BARANG
    ============================================================ */
 function pageItems() {
-  if (!hasRole('WAREHOUSE')) return `<div class="panel empty">Akses Ditolak. Hanya Admin/Gudang.</div>`;
   const rows = Object.entries(S.items);
   return `
-    <div class="page-head"><div><div class="eyebrow">INVENTORY</div><h1>Master Barang</h1></div></div>
-    <section class="panel"><div class="panel-head"><h2>Tambah Barang</h2></div>
-      <form class="form-grid" onsubmit="saveItem(event)">
-        <label>Kode<input id="item_code" required></label><label>Nama Barang<input id="item_name" required></label>
-        <label>Satuan<input id="item_unit" required placeholder="PCS"></label>
-        <div class="form-actions"><button class="btn btn-primary">Simpan</button></div>
-      </form>
-    </section>
-    <section class="panel"><div class="table-wrap"><table><thead><tr><th>Kode</th><th>Nama</th></tr></thead><tbody>
-      ${rows.map(([id,i]) => `<tr><td><strong>${esc(i.item_code)}</strong></td><td>${esc(i.item_name)}</td></tr>`).join('') || '<tr><td colspan="2" class="empty">Kosong.</td></tr>'}
-    </tbody></table></div></section>`;
+    <div class="page-head"><div><div class="eyebrow">INVENTORY</div><h1>Master Barang</h1></div>
+      <div class="action-row">
+        <button class="btn btn-light" onclick="printTable('tbl-items', 'Master Barang')">🖨 Print</button>
+        <button class="btn btn-light" onclick="exportExcel('tbl-items', 'Master_Barang')">📊 Excel</button>
+        <button class="btn btn-light" onclick="exportPDF('panel-items', 'Master_Barang')">📄 PDF</button>
+      </div>
+    </div>
+    <div class="grid-two">
+      <section class="panel"><div class="panel-head"><h2>Tambah Barang</h2></div>
+        <form class="form-grid" onsubmit="saveItem(event)">
+          <input type="hidden" id="item_id" value="${S.editing||''}">
+          <label>Kode<input id="item_code" required value="${esc(S.editing?S.items[S.editing].item_code:'')}"></label>
+          <label>Nama Barang<input id="item_name" required value="${esc(S.editing?S.items[S.editing].item_name:'')}"></label>
+          <label>Satuan<input id="item_unit" required value="${esc(S.editing?S.items[S.editing].unit:'PCS')}"></label>
+          ${!S.editing ? '<label>Saldo Awal (Qty)<input type="number" id="item_stock" value="0" required></label>' : ''}
+          <div class="form-actions">
+            ${S.editing ? '<button type="button" class="btn btn-light" onclick="nav(\'items\')">Batal</button>' : ''}
+            <button class="btn btn-primary">Simpan Barang</button>
+          </div>
+        </form>
+      </section>
+      <section class="panel"><div class="panel-head"><h2>Import CSV</h2></div>
+        <p class="hint">Format: <code>item_code, item_name, unit, stock</code></p>
+        <input type="file" accept=".csv" onchange="handleImportCSV(event, 'items')">
+      </section>
+    </div>
+    <section class="panel" id="panel-items"><div class="table-wrap">
+      <table id="tbl-items"><thead><tr><th>Kode</th><th>Nama</th><th>Satuan</th><th class="num">Stok</th><th>Aksi</th></tr></thead><tbody>
+      ${rows.map(([id,i]) => `<tr>
+        <td><strong>${esc(i.item_code)}</strong></td><td>${esc(i.item_name)}</td><td>${esc(i.unit)}</td><td class="num">${i.stock||0}</td>
+        <td>
+          <button class="btn btn-light btn-sm" onclick="editItem('${id}')">Edit</button>
+          <button class="btn btn-danger btn-sm" onclick="delItem('${id}')">Hapus</button>
+        </td>
+      </tr>`).join('') || '<tr><td colspan="5" class="empty">Kosong.</td></tr>'}
+    </tbody></table>
+    </div></section>`;
 }
 async function saveItem(e) {
   e.preventDefault();
-  await db.ref('items/' + uid()).set({ item_code: $('#item_code').value, item_name: $('#item_name').value, unit: $('#item_unit').value });
-  flash('Barang tersimpan.'); renderApp();
+  const id = $('#item_id').value || uid();
+  const data = { item_code: $('#item_code').value, item_name: $('#item_name').value, unit: $('#item_unit').value };
+  if (!S.editing) data.stock = parseFloat($('#item_stock').value) || 0;
+  await db.ref('items/' + id).update(data);
+  flash('Barang tersimpan.'); nav('items');
 }
+function editItem(id) { S.editing = id; renderApp(); }
+async function delItem(id) { if(confirm('Hapus barang ini?')) { await db.ref('items/' + id).remove(); flash('Barang dihapus.'); } }
 
+/* ============================================================
+   8. MASTER ASET & DEPARTEMEN
+   ============================================================ */
 function pageAssets() {
-  if (!hasRole('WAREHOUSE', 'ENG_SUPERVISOR', 'ENG_MANAGER')) return `<div class="panel empty">Akses Ditolak.</div>`;
   const rows = Object.entries(S.assets);
   return `
     <div class="page-head"><div><div class="eyebrow">MASTER DATA</div><h1>Master Asset</h1></div></div>
     <section class="panel"><div class="panel-head"><h2>Tambah Asset</h2></div>
       <form class="form-grid" onsubmit="saveAsset(event)">
         <label>Kode<input id="asset_code" required></label><label>Nama Asset<input id="asset_name" required></label>
-        <label>Departemen<select id="asset_dept">${Object.values(S.departments).map(d => `<option value="${d.code}">${esc(d.name)}</option>`).join('')}</select></label>
         <div class="form-actions"><button class="btn btn-primary">Simpan</button></div>
       </form>
     </section>
-    <section class="panel"><div class="table-wrap"><table><thead><tr><th>Kode</th><th>Nama</th></tr></thead><tbody>
-      ${rows.map(([id,a]) => `<tr><td><strong>${esc(a.asset_code)}</strong></td><td>${esc(a.asset_name)}</td></tr>`).join('') || '<tr><td colspan="2" class="empty">Kosong.</td></tr>'}
+    <section class="panel"><div class="table-wrap"><table><thead><tr><th>Kode</th><th>Nama</th><th>Aksi</th></tr></thead><tbody>
+      ${rows.map(([id,a]) => `<tr><td><strong>${esc(a.asset_code)}</strong></td><td>${esc(a.asset_name)}</td>
+      <td><button class="btn btn-danger btn-sm" onclick="db.ref('assets/${id}').remove()">Hapus</button></td></tr>`).join('')}
     </tbody></table></div></section>`;
 }
 async function saveAsset(e) {
@@ -314,11 +383,7 @@ async function saveAsset(e) {
   flash('Asset tersimpan.'); renderApp();
 }
 
-/* ============================================================
-   8. DEPARTEMEN (Khusus Admin)
-   ============================================================ */
 function pageDepartments() {
-  if (S.user.role !== 'ADMIN') return `<div class="panel empty">Hanya Admin.</div>`;
   const rows = Object.entries(S.departments);
   return `
     <div class="page-head"><div><div class="eyebrow">MASTER DATA</div><h1>Master Departemen</h1></div></div>
@@ -328,8 +393,9 @@ function pageDepartments() {
         <div class="form-actions"><button class="btn btn-primary">Simpan</button></div>
       </form>
     </section>
-    <section class="panel"><div class="table-wrap"><table><thead><tr><th>Kode</th><th>Nama</th></tr></thead><tbody>
-      ${rows.map(([id,d]) => `<tr><td><strong>${esc(d.code)}</strong></td><td>${esc(d.name)}</td></tr>`).join('') || '<tr><td colspan="2" class="empty">Kosong.</td></tr>'}
+    <section class="panel"><div class="table-wrap"><table><thead><tr><th>Kode</th><th>Nama</th><th>Aksi</th></tr></thead><tbody>
+      ${rows.map(([id,d]) => `<tr><td><strong>${esc(d.code)}</strong></td><td>${esc(d.name)}</td>
+      <td><button class="btn btn-danger btn-sm" onclick="db.ref('departments/${id}').remove()">Hapus</button></td></tr>`).join('')}
     </tbody></table></div></section>`;
 }
 async function saveDept(e) {
@@ -339,94 +405,7 @@ async function saveDept(e) {
 }
 
 /* ============================================================
-   9. PERMINTAAN (PEMOHON)
-   ============================================================ */
-function pageRequests() {
-  const rows = Object.entries(S.requests).sort((a,b) => (b[1].created_at||0) - (a[1].created_at||0));
-  return `
-    <div class="page-head"><div><div class="eyebrow">MAINTENANCE</div><h1>Permintaan Perbaikan</h1></div></div>
-    <div class="grid-two">
-      <section class="panel"><div class="panel-head"><h2>Buat Permintaan</h2></div>
-        <form class="form-grid" onsubmit="saveRequest(event)">
-          <label>Departemen<select id="req_dept" required><option value="">Pilih Dept</option>${Object.entries(S.departments).map(([id,d]) => `<option value="${id}">${esc(d.name)}</option>`).join('')}</select></label>
-          <label>Aset<select id="req_asset" required><option value="">Pilih Aset</option>${Object.entries(S.assets).map(([id,a]) => `<option value="${id}">${esc(a.asset_code)} — ${esc(a.asset_name)}</option>`).join('')}</select></label>
-          <label class="span-2">Deskripsi Kerusakan<textarea id="req_desc" required></textarea></label>
-          <div class="form-actions"><button class="btn btn-primary">Kirim Permintaan</button></div>
-        </form>
-      </section>
-      <section class="panel"><div class="panel-head"><h2>Daftar Permintaan</h2></div>
-        <div class="table-wrap"><table><thead><tr><th>No.</th><th>Status</th></tr></thead><tbody>
-        ${rows.map(([id,r]) => `<tr><td><strong>${esc(r.request_no)}</strong></td><td>${badge(r.status)}</td></tr>`).join('') || '<tr><td colspan="2" class="empty">Belum ada.</td></tr>'}
-        </tbody></table></div>
-      </section>
-    </div>`;
-}
-
-async function saveRequest(e) {
-  e.preventDefault();
-  const id = uid(); const deptId = $('#req_dept').value;
-  const data = { request_no: 'PR-'+Date.now().toString().slice(-6), requester_id: S.user.uid, requester_name: S.user.name, dept_id: deptId, asset_id: $('#req_asset').value, description: $('#req_desc').value, status: 'PENDING', created_at: now() };
-  
-  try {
-    await db.ref('requests/' + id).set(data);
-    
-    // Cari Kepala Departemen yang sesuai dengan departemen pemohon
-    const headDept = Object.entries(S.users).find(([uid, u]) => u.role === 'HEAD_DEPT' && u.department_id === deptId && u.is_active);
-    
-    if (headDept) {
-      await db.ref('approval_logs/' + uid()).set({ request_id: id, stage: 'HEAD_DEPARTMENT', approver_id: headDept[0], decision: 'PENDING', created_at: now() });
-    } else {
-      // Jika tidak ada Kepala Dept, lapor error tapi request tetap dibuat
-      alert("Peringatan: Belum ada Kepala Departemen untuk dept ini. Permintaan tidak bisa di-approve.");
-    }
-    flash('Permintaan dibuat.'); renderApp();
-  } catch (err) { flash(err.message, 'error'); }
-}
-
-/* ============================================================
-   10. APPROVAL (KEPALA DEPARTEMEN)
-   ============================================================ */
-function pageApprovals() {
-  const pending = Object.entries(S.logs).filter(([id,l]) => l.decision === 'PENDING' && (l.approver_id === S.user.uid || S.user.role === 'ADMIN'));
-  if (!pending.length) return `<div class="page-head"><div><div class="eyebrow">WORKFLOW</div><h1>Approval</h1></div></div><div class="panel empty">Tidak ada approval pending.</div>`;
-  
-  return `<div class="page-head"><div><div class="eyebrow">WORKFLOW</div><h1>Approval Permintaan</h1></div></div>
-  ${pending.map(([logId, log]) => {
-    const r = S.requests[log.request_id] || {};
-    return `<section class="panel">
-      <div class="panel-head"><div><span class="eyebrow">${esc(stageLabel(log.stage))}</span><h2>${esc(r.request_no||'—')} — ${esc(r.requester_name||'')}</h2></div>${badge('PENDING')}</div>
-      <p>${esc(r.description||'')}</p>
-      <form class="form-grid" onsubmit="decideApproval(event,'${logId}')" style="margin-top:12px">
-        <label class="span-2">Catatan (Opsional)<textarea id="dec_notes_${logId}"></textarea></label>
-        <div class="form-actions">
-          <button type="button" class="btn btn-danger" onclick="decideApproval(null,'${logId}','REJECTED')">Tolak</button>
-          <button type="submit" class="btn btn-success">Setujui</button>
-        </div>
-      </form>
-    </section>`;
-  }).join('')}`;
-}
-
-async function decideApproval(e, logId, forcedDecision) {
-  if (e) e.preventDefault();
-  const decision = forcedDecision || 'APPROVED';
-  const notes = (document.getElementById('dec_notes_'+logId)||{}).value || '';
-  const log = S.logs[logId]; if (!log) return;
-  
-  await db.ref('approval_logs/' + logId).update({ decision, notes, decided_at: now(), approver_name: S.user.name });
-  
-  let newStatus = decision === 'REJECTED' ? 'REJECTED' : 'APPROVED';
-  
-  if (decision === 'APPROVED') {
-    // Jika disetujui, langsung buat Work Order
-    await db.ref('workorders/' + uid()).set({ wo_no: 'WO-'+Date.now().toString().slice(-6), request_id: log.request_id, status: 'OPEN', created_at: now() });
-  }
-  await db.ref('requests/' + log.request_id).update({status: newStatus});
-  flash('Approval disimpan.'); renderApp();
-}
-
-/* ============================================================
-   11. WORK ORDER (ENGINEERING)
+   9. WORK ORDER & PEMBELIAN
    ============================================================ */
 function pageWorkOrders() {
   const rows = Object.entries(S.workorders).sort((a,b) => (b[1].created_at||0) - (a[1].created_at||0));
@@ -434,88 +413,240 @@ function pageWorkOrders() {
   ${rows.map(([id, wo]) => {
     const req = S.requests[wo.request_id] || {};
     return `<section class="panel">
-      <div class="panel-head"><div><h2>${esc(wo.wo_no)}</h2><p class="muted">${esc(req.request_no||'—')} · ${esc(req.requester_name||'')}</p></div>${badge(wo.status)}</div>
-      <p>${esc(req.description||'')}</p>
-      ${hasRole('ENG_SUPERVISOR', 'ENG_MANAGER') ? `<form class="form-grid" onsubmit="saveWO(event,'${id}')" style="margin-top:12px">
-        <label>Status<select id="wo_status_${id}">${['OPEN','IN_PROGRESS','COMPLETED'].map(s => `<option value="${s}" ${wo.status===s?'selected':''}>${s}</option>`).join('')}</select></label>
-        <label>Diagnosa<textarea id="wo_diag_${id}">${esc(wo.diagnosis||'')}</textarea></label>
-        <label>Tindakan<textarea id="wo_act_${id}">${esc(wo.action_taken||'')}</textarea></label>
-        <div class="form-actions"><button class="btn btn-primary">Simpan</button></div>
-      </form>` : `<div><strong>Diagnosa:</strong> ${esc(wo.diagnosis||'—')}<br><strong>Tindakan:</strong> ${esc(wo.action_taken||'—')}</div>`}
+      <div class="panel-head no-print"><div><h2>${esc(wo.wo_no)}</h2></div>
+        <div class="action-row">${badge(wo.status)} <button class="btn btn-light btn-sm" onclick="printSPK('${id}')">🖨 Cetak SPK</button></div>
+      </div>
+      <div id="print-spk-${id}" style="display:none;">
+        <div style="text-align:center; border-bottom:3px double #000; padding-bottom:10px; margin-bottom:20px;">
+          <h1 style="margin:0;font-size:24px;">${esc(S.settings.company?.name || 'NAMA PERUSAHAAN')}</h1>
+          <p style="margin:5px 0;">${esc(S.settings.company?.address || 'Alamat Perusahaan')}</p>
+          <p style="margin:0;">Telp: ${esc(S.settings.company?.phone || '-')} | Web: ${esc(S.settings.company?.web || '-')}</p>
+        </div>
+        <h3 style="text-align:center; text-decoration:underline;">SURAT PERINTAH KERJA (SPK)</h3>
+        <p style="text-align:right;">No: <strong>${esc(wo.wo_no)}</strong></p>
+        <table style="width:100%; margin-bottom:15px; border:none;">
+          <tr><td style="width:20%;border:none;">No. Permintaan</td><td style="border:none;">: ${esc(req.request_no||'—')}</td></tr>
+          <tr><td style="border:none;">Pemohon</td><td style="border:none;">: ${esc(req.requester_name||'—')}</td></tr>
+          <tr><td style="border:none;">Deskripsi</td><td style="border:none;">: ${esc(req.description||'—')}</td></tr>
+        </table>
+        <table border="1" cellpadding="8" style="width:100%; border-collapse:collapse; margin-bottom:20px;">
+          <tr><th style="background:#f4f4f4; width:30%;">Diagnosa</th><td>${esc(wo.diagnosis||'—')}</td></tr>
+          <tr><th style="background:#f4f4f4;">Tindakan</th><td>${esc(wo.action_taken||'—')}</td></tr>
+        </table>
+        <div style="display:flex; justify-content:space-between; margin-top:40px;">
+          <div style="text-align:center;">Pemohon<br><br><br><br>(_________________)</div>
+          <div style="text-align:center;">Teknisi<br><br><br><br>(_________________)</div>
+          <div style="text-align:center;">Kepala Engineering<br><br><br><br>(_________________)</div>
+        </div>
+      </div>
+      <div class="no-print">
+        <p>${esc(req.description||'')}</p>
+        <form class="form-grid" onsubmit="saveWO(event,'${id}')" style="margin-top:12px">
+          <label>Status<select id="wo_status_${id}">${['OPEN','IN_PROGRESS','COMPLETED'].map(s => `<option value="${s}" ${wo.status===s?'selected':''}>${s}</option>`).join('')}</select></label>
+          <label>Diagnosa<textarea id="wo_diag_${id}">${esc(wo.diagnosis||'')}</textarea></label>
+          <label>Tindakan<textarea id="wo_act_${id}">${esc(wo.action_taken||'')}</textarea></label>
+          <div class="form-actions"><button class="btn btn-primary">Simpan</button></div>
+        </form>
+        <div style="margin-top:15px; background:#fff3d8; padding:10px; border-radius:8px;">
+          <h4 style="margin-bottom:5px;font-size:12px;">Barang tidak ada di gudang? Ajukan Pembelian:</h4>
+          <form style="display:flex;gap:10px;" onsubmit="requestPurchase(event,'${id}')">
+            <input type="text" id="pur_item_${id}" placeholder="Nama Barang" required style="flex:1;">
+            <input type="number" id="pur_qty_${id}" placeholder="Qty" required style="width:80px;">
+            <button class="btn btn-warning btn-sm">Ajukan</button>
+          </form>
+        </div>
+      </div>
     </section>`;
   }).join('') || '<div class="panel empty">Belum ada Work Order.</div>'}`;
 }
-
+function printSPK(id) {
+  const content = document.getElementById('print-spk-' + id).innerHTML;
+  const win = window.open('', '_blank');
+  win.document.write(`<html><head><title>Cetak SPK</title><style>body{font-family:Arial,sans-serif;font-size:14px;padding:20px;}</style></head><body>${content}<script>window.onload=()=>window.print()<\/script></body></html>`);
+  win.document.close();
+}
 async function saveWO(e, id) {
   e.preventDefault();
   const status = $('#wo_status_'+id).value;
   await db.ref('workorders/' + id).update({ status, diagnosis: $('#wo_diag_'+id).value, action_taken: $('#wo_act_'+id).value, updated_at: now() });
-  if (status === 'COMPLETED') await db.ref('requests/' + S.workorders[id].request_id).update({status:'COMPLETED'});
   flash('WO tersimpan.'); renderApp();
+}
+async function requestPurchase(e, woId) {
+  e.preventDefault();
+  await db.ref('purchases/' + uid()).set({ wo_id: woId, item_name: $('#pur_item_'+woId).value, qty: $('#pur_qty_'+woId).value, status: 'PENDING', requester_name: S.user.name, created_at: now() });
+  flash('Pengajuan pembelian terkirim.'); renderApp();
+}
+function pagePurchases() {
+  const rows = Object.entries(S.purchases);
+  return `<div class="page-head"><div><div class="eyebrow">PROCUREMENT</div><h1>Permintaan Pembelian</h1></div></div>
+  <section class="panel"><div class="table-wrap"><table><thead><tr><th>Tanggal</th><th>Barang</th><th>Qty</th><th>Status</th></tr></thead><tbody>
+    ${rows.map(([id,p]) => `<tr><td>${new Date(p.created_at).toLocaleDateString()}</td><td>${esc(p.item_name)}</td><td>${p.qty}</td><td>${badge(p.status)}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">Belum ada pembelian.</td></tr>'}
+  </tbody></table></div></section>`;
 }
 
 /* ============================================================
-   12. MANAJEMEN PENGGUNA (ADMIN)
+   10. MANAJEMEN USER (ADMIN ONLY) & APPROVAL
    ============================================================ */
 function pageUsers() {
-  if (S.user.role !== 'ADMIN') return `<div class="panel empty">Hanya Admin yang bisa mengakses halaman ini.</div>`;
   const rows = Object.entries(S.users);
+  return `<div class="page-head"><div><div class="eyebrow">ADMIN</div><h1>Pengguna</h1></div></div>
   
-  return `<div class="page-head"><div><div class="eyebrow">ADMIN</div><h1>Manajemen Pengguna</h1></div></div>
-  <section class="panel"><div class="table-wrap"><table><thead><tr><th>Nama</th><th>Username</th><th>Role</th><th>Departemen</th><th>Aksi</th></tr></thead><tbody>
+  <div class="grid-two">
+    <section class="panel"><div class="panel-head"><h2>Buat Akun Baru</h2></div>
+      <form class="form-grid" onsubmit="createNewUser(event)">
+        <label>Nama Lengkap<input id="new_name" required></label>
+        <label>Username<input id="new_username" required></label>
+        <label>Password<input type="password" id="new_password" required minlength="6"></label>
+        <label>Role<select id="new_role">
+          <option value="REQUESTER">Pemohon</option>
+          <option value="HEAD_DEPT">Kepala Departemen</option>
+          <option value="WAREHOUSE">Gudang</option>
+          <option value="ENG_SUPERVISOR">Supervisor Engineering</option>
+          <option value="ENG_MANAGER">Kepala Engineering</option>
+          <option value="DIRECTOR">Direktur</option>
+          <option value="ADMIN">Admin</option>
+        </select></label>
+        <label>Departemen<select id="new_dept">
+          <option value="">— Tidak ada —</option>
+          ${Object.entries(S.departments).map(([id,d]) => `<option value="${id}">${esc(d.name)}</option>`).join('')}
+        </select></label>
+        <div class="form-actions"><button class="btn btn-primary">Buat Akun</button></div>
+      </form>
+    </section>
+
+    <section class="panel" id="editUserPanel" style="display:none; background:#f0f5ff; border-color:#c3d7ff;">
+      <div class="panel-head"><h2>Edit Akses Pengguna</h2></div>
+      <form class="form-grid" onsubmit="updateUser(event)">
+        <input type="hidden" id="edit_uid">
+        <label>Username<input id="edit_username" disabled></label>
+        <label>Nama Lengkap<input id="edit_name" required></label>
+        <label>Role<select id="edit_role">
+          <option value="REQUESTER">Pemohon</option>
+          <option value="HEAD_DEPT">Kepala Departemen</option>
+          <option value="WAREHOUSE">Gudang</option>
+          <option value="ENG_SUPERVISOR">Supervisor Engineering</option>
+          <option value="ENG_MANAGER">Kepala Engineering</option>
+          <option value="DIRECTOR">Direktur</option>
+          <option value="ADMIN">Admin</option>
+        </select></label>
+        <label>Departemen<select id="edit_dept">
+          <option value="">— Tidak ada —</option>
+          ${Object.entries(S.departments).map(([id,d]) => `<option value="${id}">${esc(d.name)}</option>`).join('')}
+        </select></label>
+        <div class="form-actions">
+          <button type="button" class="btn btn-light" onclick="document.getElementById('editUserPanel').style.display='none'">Batal</button>
+          <button class="btn btn-primary">Simpan Perubahan</button>
+        </div>
+      </form>
+    </section>
+  </div>
+
+  <section class="panel"><div class="panel-head"><h2>Daftar Pengguna</h2></div>
+    <div class="table-wrap"><table><thead><tr><th>Nama</th><th>Username</th><th>Role</th><th>Departemen</th><th>Aksi</th></tr></thead><tbody>
     ${rows.map(([uid, u]) => `<tr>
-      <td>${esc(u.name)}</td>
-      <td><strong>${esc(u.username)}</strong></td>
+      <td>${esc(u.name)}</td><td><strong>${esc(u.username)}</strong></td>
       <td><span class="badge blue">${ROLES[u.role]||u.role}</span></td>
       <td>${u.department_id ? esc((S.departments[u.department_id]||{}).name||'—') : '—'}</td>
-      <td><button class="btn btn-light btn-sm" onclick="editUser('${uid}')">Edit Akses</button></td>
+      <td>
+        <button class="btn btn-light btn-sm" onclick="editUser('${uid}')">Edit</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteUser('${uid}')">Hapus</button>
+      </td>
     </tr>`).join('')}
-  </tbody></table></div></section>
+  </tbody></table></div></section>`;
+}
 
-  <div id="editUserPanel" style="display:none;" class="panel">
-    <div class="panel-head"><h2>Edit Akses Pengguna</h2></div>
-    <form class="form-grid" onsubmit="saveUserRole(event)">
-      <input type="hidden" id="edit_user_uid">
-      <label>Nama<input id="edit_user_name" disabled></label>
-      <label>Role (Hak Akses)<select id="edit_user_role" required>
-        <option value="REQUESTER">Pemohon (Requester)</option>
-        <option value="HEAD_DEPT">Kepala Departemen</option>
-        <option value="ENG_SUPERVISOR">Supervisor Engineering</option>
-        <option value="ENG_MANAGER">Kepala Engineering</option>
-        <option value="WAREHOUSE">Gudang (Warehouse)</option>
-        <option value="ADMIN">Administrator</option>
-      </select></label>
-      <label>Departemen (Wajib jika Kepala Dept)<select id="edit_user_dept">
-        <option value="">— Tidak ada —</option>
-        ${Object.entries(S.departments).map(([id,d]) => `<option value="${id}">${esc(d.name)}</option>`).join('')}
-      </select></label>
-      <div class="form-actions">
-        <button type="button" class="btn btn-light" onclick="document.getElementById('editUserPanel').style.display='none'">Batal</button>
-        <button class="btn btn-primary">Simpan Perubahan</button>
-      </div>
-    </form>
-  </div>`;
+async function createNewUser(e) {
+  e.preventDefault(); const btn = e.target.querySelector('button'); btn.disabled = true;
+  const uname = $('#new_username').value.toLowerCase();
+  try {
+    const secApp = firebase.initializeApp(firebaseConfig, "Sec");
+    const cred = await secApp.auth().createUserWithEmailAndPassword(uname + FAKE_EMAIL_DOMAIN, $('#new_password').value);
+    await db.ref('users/' + cred.user.uid).set({ 
+      name: $('#new_name').value, username: uname, role: $('#new_role').value, 
+      department_id: $('#new_dept').value || null, is_active: true 
+    });
+    await secApp.auth().signOut(); await secApp.delete();
+    flash('Akun berhasil dibuat.'); e.target.reset();
+  } catch (err) { flash(err.message, 'error'); }
+  btn.disabled = false;
 }
 
 function editUser(uid) {
   const u = S.users[uid];
-  $('#edit_user_uid').value = uid;
-  $('#edit_user_name').value = u.name;
-  $('#edit_user_role').value = u.role;
-  $('#edit_user_dept').value = u.department_id || '';
+  $('#edit_uid').value = uid;
+  $('#edit_username').value = u.username;
+  $('#edit_name').value = u.name;
+  $('#edit_role').value = u.role;
+  $('#edit_dept').value = u.department_id || '';
   $('#editUserPanel').style.display = 'block';
+  window.scrollTo(0, 0);
 }
 
-async function saveUserRole(e) {
+async function updateUser(e) {
   e.preventDefault();
-  const id = $('#edit_user_uid').value;
-  const role = $('#edit_user_role').value;
-  const dept = $('#edit_user_dept').value || null;
-  
-  await db.ref('users/' + id).update({ role, department_id: dept });
-  flash('Hak akses berhasil diperbarui.');
+  const id = $('#edit_uid').value;
+  await db.ref('users/' + id).update({
+    name: $('#edit_name').value,
+    role: $('#edit_role').value,
+    department_id: $('#edit_dept').value || null
+  });
+  flash('Data pengguna diperbarui.');
   $('#editUserPanel').style.display = 'none';
   renderApp();
+}
+
+async function deleteUser(uid) {
+  if (uid === S.user.uid) return alert('Anda tidak bisa menghapus akun Anda sendiri.');
+  if (!confirm('Hapus pengguna ini? Pengguna tidak akan bisa login lagi.')) return;
+  await db.ref('users/' + uid).remove();
+  flash('Pengguna dihapus (Akses dicabut).');
+}
+
+function pageApprovals() {
+  const pending = Object.entries(S.logs).filter(([id,l]) => l.decision === 'PENDING');
+  return `<div class="page-head"><div><div class="eyebrow">WORKFLOW</div><h1>Approval</h1></div></div>
+  ${pending.map(([logId, log]) => {
+    const r = S.requests[log.request_id] || {};
+    return `<section class="panel"><h2>${esc(r.request_no)}</h2><p>${esc(r.description)}</p>
+      <div style="margin-top:10px;">
+        <button class="btn btn-success btn-sm" onclick="decideApproval('${logId}','APPROVED')">Setujui</button>
+        <button class="btn btn-danger btn-sm" onclick="decideApproval('${logId}','REJECTED')">Tolak</button>
+      </div>
+    </section>`;
+  }).join('') || '<div class="panel empty">Tidak ada approval.</div>'}`;
+}
+async function decideApproval(logId, dec) {
+  const log = S.logs[logId];
+  await db.ref('approval_logs/' + logId).update({ decision: dec, decided_at: now() });
+  await db.ref('requests/' + log.request_id).update({status: dec});
+  if (dec === 'APPROVED') await db.ref('workorders/' + uid()).set({ wo_no: 'WO-'+Date.now().toString().slice(-6), request_id: log.request_id, status: 'OPEN', created_at: now() });
+  flash('Approval disimpan.'); renderApp();
+}
+
+function pageDashboard() {
+  return `<div class="page-head"><div><h1>Dashboard</h1></div></div>
+  <div class="metrics">
+    <div class="metric"><div class="metric-icon blue">▤</div><div><div class="metric-label">Total Permintaan</div><div class="metric-value">${Object.keys(S.requests).length}</div></div></div>
+    <div class="metric"><div class="metric-icon purple">⚒</div><div><div class="metric-label">Work Order</div><div class="metric-value">${Object.keys(S.workorders).length}</div></div></div>
+  </div>`;
+}
+
+function pageRequests() {
+  const rows = Object.entries(S.requests);
+  return `
+    <div class="page-head"><div><div class="eyebrow">MAINTENANCE</div><h1>Permintaan</h1></div></div>
+    <section class="panel"><form class="form-grid" onsubmit="saveRequest(event)">
+      <label class="span-2">Deskripsi Kerusakan<textarea id="req_desc" required></textarea></label>
+      <div class="form-actions"><button class="btn btn-primary">Kirim Permintaan</button></div>
+    </form></section>
+    <section class="panel"><table><thead><tr><th>No</th><th>Deskripsi</th><th>Status</th></tr></thead><tbody>
+      ${rows.map(([id,r]) => `<tr><td>${esc(r.request_no)}</td><td>${esc(r.description)}</td><td>${badge(r.status)}</td></tr>`).join('')}
+    </tbody></table></section>`;
+}
+async function saveRequest(e) {
+  e.preventDefault();
+  await db.ref('requests/' + uid()).set({ request_no: 'PR-'+Date.now().toString().slice(-6), description: $('#req_desc').value, requester_name: S.user.name, status: 'PENDING', created_at: now() });
+  flash('Permintaan dibuat.'); renderApp();
 }
 </script>
 </body>
