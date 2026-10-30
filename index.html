@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Engineering Maintenance — Firebase</title>
+<title>Engineering Maintenance — Work Order System</title>
 <style>
 :root{--bg:#f4f6fa;--panel:#fff;--border:#e5e9f0;--text:#1d2939;--muted:#667085;--navy:#13253f;--blue:#2463eb;--green:#087443;--amber:#935500;--red:#b42318;}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -66,25 +66,21 @@ tbody tr:hover{background:#f8fafc}.num{text-align:right}
 <body>
 <div id="app"></div>
 
-<!-- Firebase SDK v9 Compat -->
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
 
 <script>
 /* ============================================================
-   1. KONFIGURASI FIREBASE (SESUAIKAN API KEY & APP ID)
+   1. KONFIGURASI FIREBASE
    ============================================================ */
 const firebaseConfig = {
-  // GANTI DENGAN API KEY ASLI DARI FIREBASE CONSOLE
   apiKey: "AIzaSyBrgGfqLrEmNsOV64FWiPpBYt5tPx0ORDk", 
   authDomain: "engineering-c421c.firebaseapp.com",
   databaseURL: "https://engineering-c421c-default-rtdb.asia-southeast1.firebasedatabase.app",
   projectId: "engineering-c421c",
   storageBucket: "engineering-c421c.appspot.com",
-  // GANTI DENGAN SENDER ID ASLI
   messagingSenderId: "1234567890", 
-  // GANTI DENGAN APP ID ASLI
   appId: "1:12345:web:abcde" 
 };
 
@@ -92,30 +88,36 @@ if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
 const auth = firebase.auth();
 const db = firebase.database();
 
+// Domain email semu untuk Login pakai Username
+const FAKE_EMAIL_DOMAIN = "@app.local";
+
 /* ============================================================
    2. STATE GLOBAL
    ============================================================ */
 const S = {
   user: null, users: {}, departments: {}, items: {}, assets: {},
-  requests: {}, workorders: {}, stocks: {}, purchases: {}, logs: {},
+  requests: {}, workorders: {}, purchases: {}, logs: {},
   page: 'dashboard', editing: null
 };
 
 const ROLES = {
-  ADMIN: 'Admin', WAREHOUSE: 'Gudang', REQUESTER: 'Pemohon',
-  HEAD_DEPT: 'Kepala Departemen', ENG_SUPERVISOR: 'Supervisor Engineering',
-  ENG_MANAGER: 'Kepala Engineering', DIRECTOR: 'Direktur', AUDITOR: 'Auditor'
+  ADMIN: 'Admin',
+  WAREHOUSE: 'Gudang',
+  REQUESTER: 'Pemohon',
+  HEAD_DEPT: 'Kepala Departemen',
+  ENG_SUPERVISOR: 'Supervisor Engineering',
+  ENG_MANAGER: 'Kepala Engineering',
+  DIRECTOR: 'Direktur'
 };
 
 /* ============================================================
-   3. UTILITAS
+   3. UTILITAS & RBAC (Hak Akses)
    ============================================================ */
 const $ = (s, r=document) => r.querySelector(s);
 const esc = t => String(t ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const uid = () => db.ref().push().key;
 const now = () => Date.now();
 const fmtDate = ts => ts ? new Date(ts).toLocaleDateString('id-ID', {day:'2-digit',month:'short',year:'numeric'}) : '—';
-const fmtNum = n => Number(n||0).toLocaleString('id-ID', {maximumFractionDigits:3});
 
 function badge(s) {
   const map = {APPROVED:'green',COMPLETED:'green',REJECTED:'red',CANCELLED:'red',PENDING:'amber',REVISION:'amber',WAITING_PARTS:'amber',IN_PROGRESS:'blue',OPEN:'blue',PROGRESS:'blue'};
@@ -128,10 +130,9 @@ function flash(msg, type='success') {
 }
 function hasRole(...roles) { return S.user && (roles.includes(S.user.role) || S.user.role === 'ADMIN'); }
 function stageLabel(s) { return {HEAD_DEPARTMENT:'Kepala Dept', ENGINEERING_SUPERVISOR:'Spv Eng', ENGINEERING_MANAGER:'Kepala Eng', DIRECTOR:'Direktur'}[s] || s; }
-function totalStock(itemId) { return Object.values(S.stocks).filter(s => s.item_id === itemId).reduce((a,s) => a + Number(s.qty||0), 0); }
 
 /* ============================================================
-   4. AUTH & INIT
+   4. AUTH (LOGIN PAKAI USERNAME)
    ============================================================ */
 auth.onAuthStateChanged(async user => {
   if (!user) { S.user = null; renderLogin(); return; }
@@ -139,75 +140,87 @@ auth.onAuthStateChanged(async user => {
   const profile = snap.val();
   
   if (!profile) {
-    const newProfile = {name: user.email.split('@')[0], email: user.email, role: 'REQUESTER', department_id: null, is_active: true, created_at: now()};
-    await db.ref('users/' + user.uid).set(newProfile);
-    S.user = {uid: user.uid, ...newProfile};
+    auth.signOut(); return;
   } else {
-    if (!profile.is_active) { await auth.signOut(); alert('Akun dinonaktifkan.'); return; }
+    if (!profile.is_active) { await auth.signOut(); alert('Akun Anda dinonaktifkan oleh Admin.'); return; }
     S.user = {uid: user.uid, ...profile};
   }
   initDataListeners();
   renderApp();
 });
 
+function renderLogin() {
+  $('#app').innerHTML = `
+    <div class="login-wrap"><div class="login-card">
+      <div class="login-logo">⚙</div><h1>Engineering Maintenance</h1><p>Work Order · Permintaan · Stok</p>
+      <form id="loginForm">
+        <label>Username (Nama)</label><input type="text" name="username" required autocomplete="username" placeholder="cth: budi">
+        <label>Password</label><input type="password" name="password" required minlength="6" autocomplete="current-password">
+        <button class="btn btn-primary" type="submit">Masuk</button>
+      </form>
+      <p class="muted" style="margin-top:16px;text-align:center;font-size:11px">Belum punya akun? <a href="#" id="showRegister" style="color:var(--blue)">Daftar</a></p>
+    </div></div>`;
+    
+  $('#loginForm').addEventListener('submit', async e => {
+    e.preventDefault();
+    const uname = e.target.username.value.trim().toLowerCase();
+    const email = uname + FAKE_EMAIL_DOMAIN; // Ubah username jadi email semu
+    
+    try { 
+      await auth.signInWithEmailAndPassword(email, e.target.password.value); 
+    } catch (err) { 
+      alert('Login gagal: Username atau Password salah.'); 
+    }
+  });
+
+  $('#showRegister').addEventListener('click', async e => {
+    e.preventDefault();
+    const name = prompt('Nama Lengkap:'); 
+    const uname = prompt('Username (tanpa spasi/tanda khusus):');
+    const pw = prompt('Password (min 6 karakter):');
+    
+    if (!name || !uname || !pw) return;
+    const email = uname.toLowerCase() + FAKE_EMAIL_DOMAIN;
+    
+    try {
+      const cred = await auth.createUserWithEmailAndPassword(email, pw);
+      // Default role saat daftar adalah REQUESTER (Pemohon)
+      await db.ref('users/' + cred.user.uid).set({ 
+        name: name, username: uname.toLowerCase(), role: 'REQUESTER', department_id: null, is_active: true, created_at: now() 
+      });
+    } catch (err) { 
+      alert('Registrasi gagal: Username mungkin sudah dipakai.'); 
+    }
+  });
+}
+
+/* ============================================================
+   5. LAYOUT & ROUTING
+   ============================================================ */
 function initDataListeners() {
   db.ref('departments').on('value', s => { S.departments = s.val() || {}; if (S.user) renderApp(); });
   db.ref('items').on('value', s => { S.items = s.val() || {}; if (S.user) renderApp(); });
   db.ref('assets').on('value', s => { S.assets = s.val() || {}; if (S.user) renderApp(); });
   db.ref('requests').on('value', s => { S.requests = s.val() || {}; if (S.user) renderApp(); });
   db.ref('workorders').on('value', s => { S.workorders = s.val() || {}; if (S.user) renderApp(); });
-  db.ref('stock_balances').on('value', s => { S.stocks = s.val() || {}; if (S.user) renderApp(); });
   db.ref('purchases').on('value', s => { S.purchases = s.val() || {}; if (S.user) renderApp(); });
   db.ref('approval_logs').on('value', s => { S.logs = s.val() || {}; if (S.user) renderApp(); });
   db.ref('users').on('value', s => { S.users = s.val() || {}; if (S.user) renderApp(); });
 }
 
-// Seed Departemen Awal jika kosong
-db.ref('departments').once('value').then(snap => {
-  if (!snap.exists()) {
-    db.ref('departments').set({
-      'D1': {code:'ENG', name:'Engineering'}, 'D2': {code:'PROD', name:'Produksi'}, 'D3': {code:'WH', name:'Gudang'}
-    });
-  }
-});
-
-/* ============================================================
-   5. LAYOUT & ROUTING
-   ============================================================ */
-function renderLogin() {
-  $('#app').innerHTML = `
-    <div class="login-wrap"><div class="login-card">
-      <div class="login-logo">⚙</div><h1>Engineering Maintenance</h1><p>Work Order · Permintaan · Stok</p>
-      <form id="loginForm">
-        <label>Email</label><input type="email" name="email" required autocomplete="username">
-        <label>Password</label><input type="password" name="password" required minlength="6" autocomplete="current-password">
-        <button class="btn btn-primary" type="submit">Masuk</button>
-      </form>
-      <p class="muted" style="margin-top:16px;text-align:center;font-size:11px">Belum punya akun? <a href="#" id="showRegister" style="color:var(--blue)">Daftar</a></p>
-    </div></div>`;
-  $('#loginForm').addEventListener('submit', async e => {
-    e.preventDefault();
-    try { await auth.signInWithEmailAndPassword(e.target.email.value, e.target.password.value); } 
-    catch (err) { alert('Login gagal: ' + err.message); }
-  });
-  $('#showRegister').addEventListener('click', async e => {
-    e.preventDefault();
-    const email = prompt('Email:'); const pw = prompt('Password (min 6):'); const name = prompt('Nama lengkap:');
-    if (!email || !pw || !name) return;
-    try {
-      const cred = await auth.createUserWithEmailAndPassword(email, pw);
-      await db.ref('users/' + cred.user.uid).set({ name, email, role: 'REQUESTER', department_id: null, is_active: true, created_at: now() });
-    } catch (err) { alert('Registrasi gagal: ' + err.message); }
-  });
-}
-
 function renderApp() {
   if (!S.user) return;
-  const navItems = [
-    ['dashboard','▦','Dashboard'], ['items','▤','Master Barang'], ['assets','⚙','Master Asset'],
-    ['requests','✚','Permintaan'], ['approvals','✓','Approval'], ['workorders','⚒','Work Order'],
-    ['purchases','🛒','Pembelian'], ['stockcard','▥','Kartu Stok'], ['users','⚿','Pengguna']
-  ];
+  
+  // Daftar Menu dinamis berdasarkan Role
+  let navItems = [['dashboard','▦','Dashboard']];
+  if (hasRole('WAREHOUSE', 'ADMIN')) navItems.push(['items','▤','Master Barang']);
+  if (hasRole('WAREHOUSE', 'ENG_SUPERVISOR', 'ENG_MANAGER', 'ADMIN')) navItems.push(['assets','⚙','Master Asset']);
+  navItems.push(['requests','✚','Permintaan']);
+  navItems.push(['approvals','✓','Approval']);
+  navItems.push(['workorders','⚒','Work Order']);
+  if (hasRole('ADMIN')) navItems.push(['departments','🏢','Departemen']);
+  if (hasRole('ADMIN')) navItems.push(['users','⚿','Pengguna']);
+
   $('#app').innerHTML = `
     <header class="topbar">
       <div class="brand">⚙ Engineering Maintenance<small>Firebase Connected</small></div>
@@ -232,8 +245,7 @@ function renderPage() {
   else if (S.page === 'requests') c.innerHTML = pageRequests();
   else if (S.page === 'approvals') c.innerHTML = pageApprovals();
   else if (S.page === 'workorders') c.innerHTML = pageWorkOrders();
-  else if (S.page === 'purchases') c.innerHTML = pagePurchases();
-  else if (S.page === 'stockcard') c.innerHTML = pageStockCard();
+  else if (S.page === 'departments') c.innerHTML = pageDepartments();
   else if (S.page === 'users') c.innerHTML = pageUsers();
 }
 
@@ -243,8 +255,7 @@ function renderPage() {
 function pageDashboard() {
   const reqCount = Object.keys(S.requests).length;
   const pending = Object.values(S.logs).filter(l => l.decision === 'PENDING').length;
-  const activeWo = Object.values(S.workorders).filter(w => ['OPEN','IN_PROGRESS','WAITING_PARTS'].includes(w.status)).length;
-  const lowStock = Object.values(S.items).filter(i => totalStock(Object.keys(S.items).find(k=>S.items[k]===i)) <= (i.min_stock||0)).length;
+  const activeWo = Object.values(S.workorders).filter(w => ['OPEN','IN_PROGRESS'].includes(w.status)).length;
   
   return `
     <div class="page-head"><div><div class="eyebrow">OVERVIEW</div><h1>Dashboard</h1></div></div>
@@ -252,73 +263,82 @@ function pageDashboard() {
       <div class="metric"><div class="metric-icon blue">▤</div><div><div class="metric-label">Total Permintaan</div><div class="metric-value">${reqCount}</div></div></div>
       <div class="metric"><div class="metric-icon amber">✓</div><div><div class="metric-label">Approval Pending</div><div class="metric-value">${pending}</div></div></div>
       <div class="metric"><div class="metric-icon purple">⚒</div><div><div class="metric-label">WO Aktif</div><div class="metric-value">${activeWo}</div></div></div>
-      <div class="metric"><div class="metric-icon red">!</div><div><div class="metric-label">Stok Kritis</div><div class="metric-value">${lowStock}</div></div></div>
-    </div>
-    <div class="grid-two">
-      <section class="panel"><div class="panel-head"><h2>Permintaan Terbaru</h2></div>
-        <div class="table-wrap"><table><thead><tr><th>No.</th><th>Aset</th><th>Status</th></tr></thead><tbody>
-        ${Object.entries(S.requests).sort((a,b) => (b[1].created_at||0) - (a[1].created_at||0)).slice(0,5).map(([id,r]) => `<tr><td><strong>${esc(r.request_no)}</strong></td><td>${esc((S.assets[r.asset_id]||{}).asset_name||'—')}</td><td>${badge(r.status)}</td></tr>`).join('') || '<tr><td colspan="3" class="empty">Belum ada.</td></tr>'}
-        </tbody></table></div>
-      </section>
-      <section class="panel"><div class="panel-head"><h2>Stok Menipis</h2></div>
-        <div class="table-wrap"><table><thead><tr><th>Barang</th><th class="num">Saldo</th></tr></thead><tbody>
-        ${Object.entries(S.items).filter(([id,i]) => totalStock(id) <= (i.min_stock||0)).slice(0,5).map(([id,i]) => `<tr><td><strong>${esc(i.item_code)}</strong><br>${esc(i.item_name)}</td><td class="num" style="color:var(--red)">${fmtNum(totalStock(id))} ${esc(i.unit)}</td></tr>`).join('') || '<tr><td colspan="2" class="empty">Stok aman.</td></tr>'}
-        </tbody></table></div>
-      </section>
     </div>`;
 }
 
 /* ============================================================
-   7. MASTER BARANG (ITEMS)
+   7. MASTER BARANG & ASET (Khusus Admin & Gudang)
    ============================================================ */
 function pageItems() {
-  const canManage = hasRole('WAREHOUSE');
-  const rows = Object.entries(S.items).sort((a,b) => (a[1].item_name||'').localeCompare(b[1].item_name||''));
+  if (!hasRole('WAREHOUSE')) return `<div class="panel empty">Akses Ditolak. Hanya Admin/Gudang.</div>`;
+  const rows = Object.entries(S.items);
   return `
     <div class="page-head"><div><div class="eyebrow">INVENTORY</div><h1>Master Barang</h1></div></div>
-    ${canManage ? `<section class="panel"><div class="panel-head"><h2>Tambah Barang</h2></div>
+    <section class="panel"><div class="panel-head"><h2>Tambah Barang</h2></div>
       <form class="form-grid" onsubmit="saveItem(event)">
-        <label>Kode<input id="item_code" required></label><label>Nama<input id="item_name" required></label>
-        <label>Satuan<input id="item_unit" required placeholder="PCS"></label><label>Min. Stok<input id="item_min" type="number" value="0" required></label>
+        <label>Kode<input id="item_code" required></label><label>Nama Barang<input id="item_name" required></label>
+        <label>Satuan<input id="item_unit" required placeholder="PCS"></label>
         <div class="form-actions"><button class="btn btn-primary">Simpan</button></div>
-      </form></section>` : ''}
-    <section class="panel"><div class="table-wrap"><table><thead><tr><th>Kode</th><th>Nama</th><th>Satuan</th><th class="num">Saldo</th><th>Status</th></tr></thead><tbody>
-      ${rows.map(([id,i]) => `<tr><td><strong>${esc(i.item_code)}</strong></td><td>${esc(i.item_name)}</td><td>${esc(i.unit)}</td><td class="num">${fmtNum(totalStock(id))}</td><td>${totalStock(id) <= (i.min_stock||0) ? '<span class="badge red">Kritis</span>' : '<span class="badge green">Aman</span>'}</td></tr>`).join('') || '<tr><td colspan="5" class="empty">Belum ada barang.</td></tr>'}
+      </form>
+    </section>
+    <section class="panel"><div class="table-wrap"><table><thead><tr><th>Kode</th><th>Nama</th></tr></thead><tbody>
+      ${rows.map(([id,i]) => `<tr><td><strong>${esc(i.item_code)}</strong></td><td>${esc(i.item_name)}</td></tr>`).join('') || '<tr><td colspan="2" class="empty">Kosong.</td></tr>'}
     </tbody></table></div></section>`;
 }
 async function saveItem(e) {
   e.preventDefault();
-  await db.ref('items/' + uid()).set({ item_code: $('#item_code').value, item_name: $('#item_name').value, unit: $('#item_unit').value, min_stock: parseFloat($('#item_min').value), is_active: true });
+  await db.ref('items/' + uid()).set({ item_code: $('#item_code').value, item_name: $('#item_name').value, unit: $('#item_unit').value });
   flash('Barang tersimpan.'); renderApp();
 }
 
-/* ============================================================
-   8. MASTER ASSET
-   ============================================================ */
 function pageAssets() {
-  const canManage = hasRole('WAREHOUSE','ENG_SUPERVISOR');
-  const rows = Object.entries(S.assets).sort((a,b) => (a[1].asset_name||'').localeCompare(b[1].asset_name||''));
+  if (!hasRole('WAREHOUSE', 'ENG_SUPERVISOR', 'ENG_MANAGER')) return `<div class="panel empty">Akses Ditolak.</div>`;
+  const rows = Object.entries(S.assets);
   return `
     <div class="page-head"><div><div class="eyebrow">MASTER DATA</div><h1>Master Asset</h1></div></div>
-    ${canManage ? `<section class="panel"><div class="panel-head"><h2>Tambah Asset</h2></div>
+    <section class="panel"><div class="panel-head"><h2>Tambah Asset</h2></div>
       <form class="form-grid" onsubmit="saveAsset(event)">
-        <label>Kode<input id="asset_code" required></label><label>Nama<input id="asset_name" required></label>
+        <label>Kode<input id="asset_code" required></label><label>Nama Asset<input id="asset_name" required></label>
         <label>Departemen<select id="asset_dept">${Object.values(S.departments).map(d => `<option value="${d.code}">${esc(d.name)}</option>`).join('')}</select></label>
-        <label>Lokasi<input id="asset_loc"></label>
         <div class="form-actions"><button class="btn btn-primary">Simpan</button></div>
-      </form></section>` : ''}
-    <section class="panel"><div class="table-wrap"><table><thead><tr><th>Kode</th><th>Nama</th><th>Lokasi</th></tr></thead><tbody>
-      ${rows.map(([id,a]) => `<tr><td><strong>${esc(a.asset_code)}</strong></td><td>${esc(a.asset_name)}</td><td>${esc(a.location||'—')}</td></tr>`).join('') || '<tr><td colspan="3" class="empty">Belum ada asset.</td></tr>'}
+      </form>
+    </section>
+    <section class="panel"><div class="table-wrap"><table><thead><tr><th>Kode</th><th>Nama</th></tr></thead><tbody>
+      ${rows.map(([id,a]) => `<tr><td><strong>${esc(a.asset_code)}</strong></td><td>${esc(a.asset_name)}</td></tr>`).join('') || '<tr><td colspan="2" class="empty">Kosong.</td></tr>'}
     </tbody></table></div></section>`;
 }
 async function saveAsset(e) {
   e.preventDefault();
-  await db.ref('assets/' + uid()).set({ asset_code: $('#asset_code').value, asset_name: $('#asset_name').value, department_code: $('#asset_dept').value, location: $('#asset_loc').value, is_active: true });
+  await db.ref('assets/' + uid()).set({ asset_code: $('#asset_code').value, asset_name: $('#asset_name').value });
   flash('Asset tersimpan.'); renderApp();
 }
 
 /* ============================================================
-   9. PERMINTAAN
+   8. DEPARTEMEN (Khusus Admin)
+   ============================================================ */
+function pageDepartments() {
+  if (S.user.role !== 'ADMIN') return `<div class="panel empty">Hanya Admin.</div>`;
+  const rows = Object.entries(S.departments);
+  return `
+    <div class="page-head"><div><div class="eyebrow">MASTER DATA</div><h1>Master Departemen</h1></div></div>
+    <section class="panel"><div class="panel-head"><h2>Tambah Departemen</h2></div>
+      <form class="form-grid" onsubmit="saveDept(event)">
+        <label>Kode<input id="dept_code" required placeholder="ENG"></label><label>Nama Departemen<input id="dept_name" required placeholder="Engineering"></label>
+        <div class="form-actions"><button class="btn btn-primary">Simpan</button></div>
+      </form>
+    </section>
+    <section class="panel"><div class="table-wrap"><table><thead><tr><th>Kode</th><th>Nama</th></tr></thead><tbody>
+      ${rows.map(([id,d]) => `<tr><td><strong>${esc(d.code)}</strong></td><td>${esc(d.name)}</td></tr>`).join('') || '<tr><td colspan="2" class="empty">Kosong.</td></tr>'}
+    </tbody></table></div></section>`;
+}
+async function saveDept(e) {
+  e.preventDefault();
+  await db.ref('departments/' + uid()).set({ code: $('#dept_code').value.toUpperCase(), name: $('#dept_name').value });
+  flash('Departemen tersimpan.'); renderApp();
+}
+
+/* ============================================================
+   9. PERMINTAAN (PEMOHON)
    ============================================================ */
 function pageRequests() {
   const rows = Object.entries(S.requests).sort((a,b) => (b[1].created_at||0) - (a[1].created_at||0));
@@ -327,36 +347,43 @@ function pageRequests() {
     <div class="grid-two">
       <section class="panel"><div class="panel-head"><h2>Buat Permintaan</h2></div>
         <form class="form-grid" onsubmit="saveRequest(event)">
+          <label>Departemen<select id="req_dept" required><option value="">Pilih Dept</option>${Object.entries(S.departments).map(([id,d]) => `<option value="${id}">${esc(d.name)}</option>`).join('')}</select></label>
           <label>Aset<select id="req_asset" required><option value="">Pilih Aset</option>${Object.entries(S.assets).map(([id,a]) => `<option value="${id}">${esc(a.asset_code)} — ${esc(a.asset_name)}</option>`).join('')}</select></label>
-          <label>Prioritas<select id="req_priority"><option>NORMAL</option><option>URGENT</option></select></label>
-          <label class="span-2">Deskripsi<textarea id="req_desc" required></textarea></label>
-          <div class="form-actions"><button class="btn btn-primary">Kirim</button></div>
+          <label class="span-2">Deskripsi Kerusakan<textarea id="req_desc" required></textarea></label>
+          <div class="form-actions"><button class="btn btn-primary">Kirim Permintaan</button></div>
         </form>
       </section>
       <section class="panel"><div class="panel-head"><h2>Daftar Permintaan</h2></div>
-        <div class="table-wrap"><table><thead><tr><th>No.</th><th>Aset</th><th>Status</th></tr></thead><tbody>
-        ${rows.map(([id,r]) => `<tr><td><strong>${esc(r.request_no)}</strong></td><td>${esc((S.assets[r.asset_id]||{}).asset_name||'—')}</td><td>${badge(r.status)}</td></tr>`).join('') || '<tr><td colspan="3" class="empty">Belum ada.</td></tr>'}
+        <div class="table-wrap"><table><thead><tr><th>No.</th><th>Status</th></tr></thead><tbody>
+        ${rows.map(([id,r]) => `<tr><td><strong>${esc(r.request_no)}</strong></td><td>${badge(r.status)}</td></tr>`).join('') || '<tr><td colspan="2" class="empty">Belum ada.</td></tr>'}
         </tbody></table></div>
       </section>
     </div>`;
 }
+
 async function saveRequest(e) {
   e.preventDefault();
-  const id = uid(); const assetId = $('#req_asset').value;
-  const data = { request_no: 'PR-'+Date.now().toString().slice(-6), requester_id: S.user.uid, requester_name: S.user.name, asset_id: assetId, priority: $('#req_priority').value, description: $('#req_desc').value, status: 'PENDING', created_at: now() };
+  const id = uid(); const deptId = $('#req_dept').value;
+  const data = { request_no: 'PR-'+Date.now().toString().slice(-6), requester_id: S.user.uid, requester_name: S.user.name, dept_id: deptId, asset_id: $('#req_asset').value, description: $('#req_desc').value, status: 'PENDING', created_at: now() };
+  
   try {
     await db.ref('requests/' + id).set(data);
-    // Logika Approval Pertama (HEAD_DEPT)
-    const headDept = Object.entries(S.users).find(([u,d]) => d.role === 'HEAD_DEPT' && d.is_active);
+    
+    // Cari Kepala Departemen yang sesuai dengan departemen pemohon
+    const headDept = Object.entries(S.users).find(([uid, u]) => u.role === 'HEAD_DEPT' && u.department_id === deptId && u.is_active);
+    
     if (headDept) {
       await db.ref('approval_logs/' + uid()).set({ request_id: id, stage: 'HEAD_DEPARTMENT', approver_id: headDept[0], decision: 'PENDING', created_at: now() });
+    } else {
+      // Jika tidak ada Kepala Dept, lapor error tapi request tetap dibuat
+      alert("Peringatan: Belum ada Kepala Departemen untuk dept ini. Permintaan tidak bisa di-approve.");
     }
     flash('Permintaan dibuat.'); renderApp();
   } catch (err) { flash(err.message, 'error'); }
 }
 
 /* ============================================================
-   10. APPROVAL
+   10. APPROVAL (KEPALA DEPARTEMEN)
    ============================================================ */
 function pageApprovals() {
   const pending = Object.entries(S.logs).filter(([id,l]) => l.decision === 'PENDING' && (l.approver_id === S.user.uid || S.user.role === 'ADMIN'));
@@ -366,10 +393,10 @@ function pageApprovals() {
   ${pending.map(([logId, log]) => {
     const r = S.requests[log.request_id] || {};
     return `<section class="panel">
-      <div class="panel-head"><div><span class="eyebrow">${esc(stageLabel(log.stage))}</span><h2>${esc(r.request_no||'—')}</h2></div>${badge('PENDING')}</div>
+      <div class="panel-head"><div><span class="eyebrow">${esc(stageLabel(log.stage))}</span><h2>${esc(r.request_no||'—')} — ${esc(r.requester_name||'')}</h2></div>${badge('PENDING')}</div>
       <p>${esc(r.description||'')}</p>
       <form class="form-grid" onsubmit="decideApproval(event,'${logId}')" style="margin-top:12px">
-        <label class="span-2">Catatan<textarea id="dec_notes_${logId}"></textarea></label>
+        <label class="span-2">Catatan (Opsional)<textarea id="dec_notes_${logId}"></textarea></label>
         <div class="form-actions">
           <button type="button" class="btn btn-danger" onclick="decideApproval(null,'${logId}','REJECTED')">Tolak</button>
           <button type="submit" class="btn btn-success">Setujui</button>
@@ -378,6 +405,7 @@ function pageApprovals() {
     </section>`;
   }).join('')}`;
 }
+
 async function decideApproval(e, logId, forcedDecision) {
   if (e) e.preventDefault();
   const decision = forcedDecision || 'APPROVED';
@@ -386,38 +414,28 @@ async function decideApproval(e, logId, forcedDecision) {
   
   await db.ref('approval_logs/' + logId).update({ decision, notes, decided_at: now(), approver_name: S.user.name });
   
-  const nextStages = { HEAD_DEPARTMENT: 'ENGINEERING_SUPERVISOR', ENGINEERING_SUPERVISOR: 'ENGINEERING_MANAGER', ENGINEERING_MANAGER: 'DIRECTOR' };
   let newStatus = decision === 'REJECTED' ? 'REJECTED' : 'APPROVED';
   
   if (decision === 'APPROVED') {
-    if (nextStages[log.stage]) {
-      const nextApprover = Object.entries(S.users).find(([u,d]) => d.role === ({HEAD_DEPARTMENT:'HEAD_DEPT', ENGINEERING_SUPERVISOR:'ENG_SUPERVISOR', ENGINEERING_MANAGER:'ENG_MANAGER'})[log.stage] && d.is_active);
-      if (nextApprover) {
-        await db.ref('approval_logs/' + uid()).set({ request_id: log.request_id, stage: nextStages[log.stage], approver_id: nextApprover[0], decision: 'PENDING', created_at: now() });
-        newStatus = 'PENDING';
-      }
-    } else {
-      // Final Approval: Buat Work Order
-      await db.ref('workorders/' + uid()).set({ wo_no: 'WO-'+Date.now().toString().slice(-6), request_id: log.request_id, status: 'OPEN', created_at: now() });
-    }
+    // Jika disetujui, langsung buat Work Order
+    await db.ref('workorders/' + uid()).set({ wo_no: 'WO-'+Date.now().toString().slice(-6), request_id: log.request_id, status: 'OPEN', created_at: now() });
   }
   await db.ref('requests/' + log.request_id).update({status: newStatus});
   flash('Approval disimpan.'); renderApp();
 }
 
 /* ============================================================
-   11. WORK ORDER
+   11. WORK ORDER (ENGINEERING)
    ============================================================ */
 function pageWorkOrders() {
   const rows = Object.entries(S.workorders).sort((a,b) => (b[1].created_at||0) - (a[1].created_at||0));
-  const canEdit = hasRole('ENG_SUPERVISOR','ENG_MANAGER');
   return `<div class="page-head"><div><div class="eyebrow">ENGINEERING</div><h1>Work Order (SPK)</h1></div></div>
   ${rows.map(([id, wo]) => {
     const req = S.requests[wo.request_id] || {};
     return `<section class="panel">
-      <div class="panel-head"><div><h2>${esc(wo.wo_no)}</h2><p class="muted">${esc(req.request_no||'—')}</p></div>${badge(wo.status)}</div>
+      <div class="panel-head"><div><h2>${esc(wo.wo_no)}</h2><p class="muted">${esc(req.request_no||'—')} · ${esc(req.requester_name||'')}</p></div>${badge(wo.status)}</div>
       <p>${esc(req.description||'')}</p>
-      ${canEdit ? `<form class="form-grid" onsubmit="saveWO(event,'${id}')" style="margin-top:12px">
+      ${hasRole('ENG_SUPERVISOR', 'ENG_MANAGER') ? `<form class="form-grid" onsubmit="saveWO(event,'${id}')" style="margin-top:12px">
         <label>Status<select id="wo_status_${id}">${['OPEN','IN_PROGRESS','COMPLETED'].map(s => `<option value="${s}" ${wo.status===s?'selected':''}>${s}</option>`).join('')}</select></label>
         <label>Diagnosa<textarea id="wo_diag_${id}">${esc(wo.diagnosis||'')}</textarea></label>
         <label>Tindakan<textarea id="wo_act_${id}">${esc(wo.action_taken||'')}</textarea></label>
@@ -426,6 +444,7 @@ function pageWorkOrders() {
     </section>`;
   }).join('') || '<div class="panel empty">Belum ada Work Order.</div>'}`;
 }
+
 async function saveWO(e, id) {
   e.preventDefault();
   const status = $('#wo_status_'+id).value;
@@ -435,34 +454,67 @@ async function saveWO(e, id) {
 }
 
 /* ============================================================
-   12. STOK & PEMBELIAN
-   ============================================================ */
-function pageStockCard() {
-  const rows = Object.entries(S.items);
-  return `<div class="page-head"><div><div class="eyebrow">INVENTORY</div><h1>Kartu Stok</h1></div></div>
-  <section class="panel"><div class="table-wrap"><table><thead><tr><th>Kode</th><th>Nama</th><th class="num">Saldo</th></tr></thead><tbody>
-    ${rows.map(([id,i]) => `<tr><td><strong>${esc(i.item_code)}</strong></td><td>${esc(i.item_name)}</td><td class="num">${fmtNum(totalStock(id))} ${esc(i.unit)}</td></tr>`).join('') || '<tr><td colspan="3" class="empty">Kosong.</td></tr>'}
-  </tbody></table></div></section>`;
-}
-
-function pagePurchases() {
-  const rows = Object.entries(S.purchases);
-  return `<div class="page-head"><div><div class="eyebrow">PROCUREMENT</div><h1>Pembelian Part</h1></div></div>
-  <section class="panel"><div class="table-wrap"><table><thead><tr><th>Tanggal</th><th>Barang</th><th>Qty</th><th>Status</th></tr></thead><tbody>
-    ${rows.map(([id,p]) => `<tr><td>${fmtDate(p.created_at)}</td><td>${esc(p.item_name)}</td><td>${p.qty}</td><td>${badge(p.status)}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">Kosong.</td></tr>'}
-  </tbody></table></div></section>`;
-}
-
-/* ============================================================
-   13. USERS
+   12. MANAJEMEN PENGGUNA (ADMIN)
    ============================================================ */
 function pageUsers() {
-  if (S.user.role !== 'ADMIN') return `<div class="panel empty">Hanya Admin.</div>`;
+  if (S.user.role !== 'ADMIN') return `<div class="panel empty">Hanya Admin yang bisa mengakses halaman ini.</div>`;
   const rows = Object.entries(S.users);
-  return `<div class="page-head"><div><div class="eyebrow">ADMIN</div><h1>Pengguna</h1></div></div>
-  <section class="panel"><div class="table-wrap"><table><thead><tr><th>Nama</th><th>Email</th><th>Role</th><th>Status</th></tr></thead><tbody>
-    ${rows.map(([uid,u]) => `<tr><td>${esc(u.name)}</td><td>${esc(u.email)}</td><td><span class="badge blue">${ROLES[u.role]||u.role}</span></td><td>${u.is_active?'Aktif':'Off'}</td></tr>`).join('')}
-  </tbody></table></div></section>`;
+  
+  return `<div class="page-head"><div><div class="eyebrow">ADMIN</div><h1>Manajemen Pengguna</h1></div></div>
+  <section class="panel"><div class="table-wrap"><table><thead><tr><th>Nama</th><th>Username</th><th>Role</th><th>Departemen</th><th>Aksi</th></tr></thead><tbody>
+    ${rows.map(([uid, u]) => `<tr>
+      <td>${esc(u.name)}</td>
+      <td><strong>${esc(u.username)}</strong></td>
+      <td><span class="badge blue">${ROLES[u.role]||u.role}</span></td>
+      <td>${u.department_id ? esc((S.departments[u.department_id]||{}).name||'—') : '—'}</td>
+      <td><button class="btn btn-light btn-sm" onclick="editUser('${uid}')">Edit Akses</button></td>
+    </tr>`).join('')}
+  </tbody></table></div></section>
+
+  <div id="editUserPanel" style="display:none;" class="panel">
+    <div class="panel-head"><h2>Edit Akses Pengguna</h2></div>
+    <form class="form-grid" onsubmit="saveUserRole(event)">
+      <input type="hidden" id="edit_user_uid">
+      <label>Nama<input id="edit_user_name" disabled></label>
+      <label>Role (Hak Akses)<select id="edit_user_role" required>
+        <option value="REQUESTER">Pemohon (Requester)</option>
+        <option value="HEAD_DEPT">Kepala Departemen</option>
+        <option value="ENG_SUPERVISOR">Supervisor Engineering</option>
+        <option value="ENG_MANAGER">Kepala Engineering</option>
+        <option value="WAREHOUSE">Gudang (Warehouse)</option>
+        <option value="ADMIN">Administrator</option>
+      </select></label>
+      <label>Departemen (Wajib jika Kepala Dept)<select id="edit_user_dept">
+        <option value="">— Tidak ada —</option>
+        ${Object.entries(S.departments).map(([id,d]) => `<option value="${id}">${esc(d.name)}</option>`).join('')}
+      </select></label>
+      <div class="form-actions">
+        <button type="button" class="btn btn-light" onclick="document.getElementById('editUserPanel').style.display='none'">Batal</button>
+        <button class="btn btn-primary">Simpan Perubahan</button>
+      </div>
+    </form>
+  </div>`;
+}
+
+function editUser(uid) {
+  const u = S.users[uid];
+  $('#edit_user_uid').value = uid;
+  $('#edit_user_name').value = u.name;
+  $('#edit_user_role').value = u.role;
+  $('#edit_user_dept').value = u.department_id || '';
+  $('#editUserPanel').style.display = 'block';
+}
+
+async function saveUserRole(e) {
+  e.preventDefault();
+  const id = $('#edit_user_uid').value;
+  const role = $('#edit_user_role').value;
+  const dept = $('#edit_user_dept').value || null;
+  
+  await db.ref('users/' + id).update({ role, department_id: dept });
+  flash('Hak akses berhasil diperbarui.');
+  $('#editUserPanel').style.display = 'none';
+  renderApp();
 }
 </script>
 </body>
