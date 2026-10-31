@@ -64,7 +64,12 @@ tbody tr:hover{background:#f8fafc}.num{text-align:right}
 .login-card p{text-align:center;color:var(--muted);font-size:12px;margin-bottom:24px}
 .login-card .btn{width:100%;justify-content:center;margin-top:20px;padding:11px}
 .muted{color:var(--muted)}.hint{font-size:12px;color:var(--muted);margin-bottom:10px}
-@media print { body { background: #fff; font-size: 12px; } .topbar, .sidebar, .btn, .no-print { display: none !important; } .content { padding: 0; } .layout { display: block; } .panel { border: none; box-shadow: none; padding: 0; } }
+@media print { 
+  body { background: #fff; font-size: 12px; } 
+  .topbar, .sidebar, .btn, .no-print { display: none !important; } 
+  .content { padding: 0; } .layout { display: block; } 
+  .panel { border: none; box-shadow: none; padding: 0; } 
+}
 </style>
 </head>
 <body>
@@ -99,7 +104,7 @@ const FAKE_EMAIL_DOMAIN = "@app.local";
    ============================================================ */
 const S = {
   user: null, users: {}, departments: {}, items: {}, assets: {},
-  requests: {}, workorders: {}, purchases: {}, logs: {}, settings: {},
+  requests: {}, workorders: {}, purchases: {}, logs: {}, settings: {}, stock_history: {},
   page: 'dashboard', editing: null
 };
 
@@ -116,10 +121,12 @@ const $ = (s, r=document) => r.querySelector(s);
 const esc = t => String(t ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const uid = () => db.ref().push().key;
 const now = () => Date.now();
+const fmtDate = ts => ts ? new Date(ts).toLocaleDateString('id-ID', {day:'2-digit',month:'short',year:'numeric'}) : '—';
+
 function isAdmin() { return S.user && S.user.role === 'ADMIN'; }
 
 function badge(s) {
-  const map = {APPROVED:'green',COMPLETED:'green',REJECTED:'red',PENDING:'amber',REVISION:'amber',IN_PROGRESS:'blue',OPEN:'blue',PENDING_MANAGER:'amber',PENDING_DIRECTOR:'amber'};
+  const map = {APPROVED:'green',COMPLETED:'green',REJECTED:'red',PENDING:'amber',PENDING_HEAD:'amber',PENDING_MANAGER:'amber',PENDING_DIRECTOR:'amber',IN_PROGRESS:'blue',OPEN:'blue'};
   return `<span class="badge ${map[s]||'gray'}">${esc(s||'').replace(/_/g,' ')}</span>`;
 }
 function flash(msg, type='success') {
@@ -163,6 +170,7 @@ function initDataListeners() {
   db.ref('approval_logs').on('value', s => { S.logs = s.val() || {}; if (S.user) renderApp(); });
   db.ref('users').on('value', s => { S.users = s.val() || {}; if (S.user) renderApp(); });
   db.ref('settings').on('value', s => { S.settings = s.val() || {}; if (S.user) renderApp(); });
+  db.ref('stock_history').on('value', s => { S.stock_history = s.val() || {}; if (S.user) renderApp(); });
 }
 
 function renderApp() {
@@ -176,20 +184,20 @@ function renderApp() {
     navItems.push(['approvals','✓','Approval']);
     navItems.push(['workorders','⚒','Work Order']);
     navItems.push(['purchases','🛒','Pembelian']);
+    navItems.push(['stockcard','📦','Kartu Stok']);
     navItems.push(['departments','🏢','Departemen']);
     navItems.push(['users','⚿','Pengguna']);
     navItems.push(['settings','⚙','Profil Perusahaan']);
   } else {
-    // Menu untuk Pemohon, Head Dept, Eng Manager, Direktur
     navItems.push(['requests','✚','Permintaan']);
     navItems.push(['approvals','✓','Approval']);
-    // Work Order hanya terlihat oleh Admin/Gudang/Teknisi (bisa disesuaikan)
-    if (S.user.role === 'WAREHOUSE') navItems.push(['workorders','⚒','Work Order']);
+    navItems.push(['workorders','⚒','Progres & SPK']); // Semua role bisa lihat progres & cetak SPK
+    if (S.user.role === 'WAREHOUSE') navItems.push(['stockcard','📦','Kartu Stok']);
   }
 
   $('#app').innerHTML = `
     <header class="topbar no-print">
-      <div class="brand">⚙ Engineering Maintenance<small>Admin System</small></div>
+      <div class="brand">⚙ Engineering Maintenance<small>Full Flow System</small></div>
       <div class="userbox"><span>${esc(S.user.name)}<small>${esc(ROLES[S.user.role]||S.user.role)}</small></span><button class="btn btn-light btn-sm" onclick="auth.signOut()">Keluar</button></div>
     </header>
     <div class="layout">
@@ -216,13 +224,14 @@ function renderPage() {
   else if (S.page === 'approvals') c.innerHTML = pageApprovals();
   else if (S.page === 'workorders') c.innerHTML = pageWorkOrders();
   else if (S.page === 'purchases') c.innerHTML = pagePurchases();
+  else if (S.page === 'stockcard') c.innerHTML = pageStockCard();
   else if (S.page === 'departments') c.innerHTML = pageDepartments();
   else if (S.page === 'users') c.innerHTML = pageUsers();
   else if (S.page === 'settings') c.innerHTML = pageSettings();
 }
 
 /* ============================================================
-   6. PROFIL & MASTER DATA (ADMIN)
+   6. PROFIL & MASTER DATA
    ============================================================ */
 function pageSettings() {
   const c = S.settings.company || {};
@@ -342,7 +351,7 @@ function pageUsers() {
           <option value="WAREHOUSE">Gudang</option>
           <option value="ADMIN">Admin</option>
         </select></label>
-        <label>Departemen (Kosongkan jika Direktur/Eng Manager)<select id="new_dept">
+        <label>Departemen (Wajib jika Kepala Dept)<select id="new_dept">
           <option value="">— Global / Tidak Ada —</option>
           ${Object.entries(S.departments).map(([id,d]) => `<option value="${id}">${esc(d.name)}</option>`).join('')}
         </select></label>
@@ -405,7 +414,7 @@ async function deleteUser(uid) {
 }
 
 /* ============================================================
-   8. PERMINTAAN & APPROVAL (ALUR BERJENJANG)
+   8. PERMINTAAN & APPROVAL (ALUR BERJENJANG + TANDA TANGAN)
    ============================================================ */
 function pageRequests() {
   const rows = Object.entries(S.requests).sort((a,b) => b[1].created_at - a[1].created_at);
@@ -431,7 +440,6 @@ function pageRequests() {
              </select>
              <input type="number" id="req_qty" placeholder="Qty" style="flex:1;">
           </div>
-          <small class="muted">* Barang akan ditampilkan di Work Order setelah disetujui Direktur.</small>
         </div>
 
         <div class="form-actions"><button class="btn btn-primary">Kirim Permintaan</button></div>
@@ -441,7 +449,7 @@ function pageRequests() {
     <section class="panel"><div class="table-wrap"><table><thead><tr><th>No</th><th>Tanggal</th><th>Aset</th><th>Deskripsi</th><th>Status</th></tr></thead><tbody>
       ${rows.map(([id,r]) => `<tr>
         <td><strong>${esc(r.request_no)}</strong></td>
-        <td>${new Date(r.created_at).toLocaleDateString()}</td>
+        <td>${fmtDate(r.created_at)}</td>
         <td>${esc(r.asset||'—')}</td>
         <td>${esc(r.description)}</td>
         <td>${badge(r.status)}</td>
@@ -472,7 +480,6 @@ async function saveRequest(e) {
     created_at: now() 
   });
 
-  // Cari Kepala Dept
   const headDeptUid = Object.keys(S.users).find(uid => 
     S.users[uid].role === 'HEAD_DEPT' && S.users[uid].department_id === deptId
   );
@@ -483,7 +490,6 @@ async function saveRequest(e) {
     });
     flash('Permintaan dikirim ke Kepala Departemen.');
   } else {
-    // Jika tidak ada Head Dept, bypass ke Eng Manager
     const engMgrUid = Object.keys(S.users).find(uid => S.users[uid].role === 'ENG_MANAGER');
     if(engMgrUid) {
       await db.ref('requests/' + reqId).update({status: 'PENDING_MANAGER'});
@@ -510,6 +516,7 @@ function pageApprovals() {
 
     return `<section class="panel">
       <div class="panel-head"><div><h2>${esc(r.request_no)} <small class="muted">(Menunggu: ${stageName})</small></h2></div>${badge('PENDING')}</div>
+      <p><strong>Pemohon:</strong> ${esc(r.requester_name)}</p>
       <p><strong>Aset:</strong> ${esc(r.asset||'—')}</p>
       <p><strong>Deskripsi:</strong> ${esc(r.description)}</p>
       <div style="margin-top:15px; display:flex; gap:10px;">
@@ -531,54 +538,59 @@ async function decideApproval(logId, dec) {
     return flash('Permintaan ditolak.');
   }
 
+  // Menyimpan nama & tanggal untuk Tanda Tangan SPK
+  const updateData = {};
+  if (log.stage === 'HEAD_DEPT') {
+    updateData.approver_head_name = S.user.name;
+    updateData.approver_head_date = now();
+  } else if (log.stage === 'ENG_MANAGER') {
+    updateData.approver_eng_name = S.user.name;
+    updateData.approver_eng_date = now();
+  } else if (log.stage === 'DIRECTOR') {
+    updateData.approver_dir_name = S.user.name;
+    updateData.approver_dir_date = now();
+    updateData.status = 'APPROVED';
+  }
+
   // ALUR APPROVAL BERJENJANG
   if (log.stage === 'HEAD_DEPT') {
-    // Lanjut ke Kepala Engineering
+    updateData.status = 'PENDING_MANAGER';
     const engMgrUid = Object.keys(S.users).find(uid => S.users[uid].role === 'ENG_MANAGER');
     if(engMgrUid) {
-      await db.ref('requests/' + log.request_id).update({status: 'PENDING_MANAGER'});
       await db.ref('approval_logs/' + uid()).set({ request_id: log.request_id, stage: 'ENG_MANAGER', approver_id: engMgrUid, decision: 'PENDING', created_at: now() });
-      flash('Disetujui Kepala Dept. Diteruskan ke Kepala Engineering.');
-    } else {
-      flash('Gagal: Belum ada user dengan role Kepala Engineering.', 'error');
     }
   } 
   else if (log.stage === 'ENG_MANAGER') {
-    // Lanjut ke Direktur
+    updateData.status = 'PENDING_DIRECTOR';
     const dirUid = Object.keys(S.users).find(uid => S.users[uid].role === 'DIRECTOR');
     if(dirUid) {
-      await db.ref('requests/' + log.request_id).update({status: 'PENDING_DIRECTOR'});
       await db.ref('approval_logs/' + uid()).set({ request_id: log.request_id, stage: 'DIRECTOR', approver_id: dirUid, decision: 'PENDING', created_at: now() });
-      flash('Disetujui Kepala Engineering. Diteruskan ke Direktur.');
-    } else {
-      flash('Gagal: Belum ada user dengan role Direktur.', 'error');
     }
   } 
   else if (log.stage === 'DIRECTOR') {
     // Tahap Terakhir: Buat Work Order
-    await db.ref('requests/' + log.request_id).update({status: 'APPROVED'});
-    
-    // Cari WO sebelumnya untuk req ini (jika ada)
     const existingWO = Object.values(S.workorders).find(w => w.request_id === log.request_id);
     if(!existingWO) {
       await db.ref('workorders/' + uid()).set({ 
         wo_no: 'WO-'+Date.now().toString().slice(-6), 
         request_id: log.request_id, 
-        items: req.items || [], // Bawa data barang yang diminta ke WO
+        items: req.items || [],
         status: 'OPEN', 
         created_at: now() 
       });
     }
-    flash('Disetujui Direktur. Work Order telah diterbitkan.');
   }
-  renderApp();
+
+  await db.ref('requests/' + log.request_id).update(updateData);
+  flash('Keputusan disimpan.'); renderApp();
 }
 
 /* ============================================================
-   9. WORK ORDER (GUDANG)
+   9. WORK ORDER (PROGRES & SPK FINAL)
    ============================================================ */
 function pageWorkOrders() {
   const rows = Object.entries(S.workorders).sort((a,b) => (b[1].created_at||0) - (a[1].created_at||0));
+  const canEdit = isAdmin() || S.user.role === 'ENG_MANAGER' || S.user.role === 'WAREHOUSE';
   
   return `<div class="page-head"><div><div class="eyebrow">ENGINEERING</div><h1>Work Order (SPK)</h1></div></div>
   ${rows.map(([id, wo]) => {
@@ -586,28 +598,59 @@ function pageWorkOrders() {
     const items = wo.items || [];
     
     return `<section class="panel">
-      <div class="panel-head no-print"><div><h2>${esc(wo.wo_no)}</h2><p class="muted">Pemohon: ${esc(req.requester_name||'—')}</p></div>
+      <div class="panel-head no-print">
+        <div><h2>${esc(wo.wo_no)}</h2><p class="muted">Pemohon: ${esc(req.requester_name||'—')} | Dept: ${esc((S.departments[req.dept_id]||{}).name||'—')}</p></div>
         <div class="action-row">${badge(wo.status)} <button class="btn btn-light btn-sm" onclick="printSPK('${id}')">🖨 Cetak SPK</button></div>
       </div>
       
+      <!-- LAYOUT CETAK SPK DENGAN TANDA TANGAN -->
       <div id="print-spk-${id}" style="display:none;">
         <div style="text-align:center; border-bottom:3px double #000; padding-bottom:10px; margin-bottom:20px;">
           <h1 style="margin:0;font-size:24px;">${esc(S.settings.company?.name || 'NAMA PERUSAHAAN')}</h1>
           <p style="margin:5px 0;">${esc(S.settings.company?.address || 'Alamat Perusahaan')}</p>
+          <p style="margin:0;">Telp: ${esc(S.settings.company?.phone || '-')} | Web: ${esc(S.settings.company?.web || '-')}</p>
         </div>
-        <h3 style="text-align:center; text-decoration:underline;">SURAT PERINTAH KERJA (SPK)</h3>
+        <h3 style="text-align:center; text-decoration:underline; margin-bottom:15px;">SURAT PERINTAH KERJA (SPK)</h3>
         <p style="text-align:right;">No: <strong>${esc(wo.wo_no)}</strong></p>
         <table style="width:100%; margin-bottom:15px; border:none;">
-          <tr><td style="width:20%;border:none;">No. Permintaan</td><td style="border:none;">: ${esc(req.request_no||'—')}</td></tr>
+          <tr><td style="width:25%;border:none;">Tanggal</td><td style="border:none;">: ${fmtDate(wo.created_at)}</td></tr>
+          <tr><td style="border:none;">Pemohon</td><td style="border:none;">: ${esc(req.requester_name||'—')}</td></tr>
           <tr><td style="border:none;">Aset</td><td style="border:none;">: ${esc(req.asset||'—')}</td></tr>
           <tr><td style="border:none;">Deskripsi</td><td style="border:none;">: ${esc(req.description||'—')}</td></tr>
         </table>
+        
         ${items.length > 0 ? `
-        <h4>Spare Part Dibutuhkan:</h4>
+        <h4>Spare Part:</h4>
         <table border="1" cellpadding="8" style="width:100%; border-collapse:collapse; margin-bottom:20px;">
           <tr><th>Nama Barang</th><th>Qty</th></tr>
           ${items.map(it => `<tr><td>${esc(S.items[it.item_id]?.item_name || 'Barang Dihapus')}</td><td>${it.qty}</td></tr>`).join('')}
         </table>` : ''}
+        
+        <div style="margin-bottom:20px;">
+          <p><strong>Diagnosa:</strong> ${esc(wo.diagnosis||'—')}</p>
+          <p><strong>Tindakan:</strong> ${esc(wo.action_taken||'—')}</p>
+          <p><strong>Status:</strong> ${wo.status}</p>
+        </div>
+
+        <!-- KOTAK TANDA TANGAN -->
+        <div style="display:flex; justify-content:space-between; margin-top:40px; text-align:center;">
+          <div style="width:22%">
+            <p>Pemohon</p><br><br><br>
+            <p style="border-top:1px solid #000; padding-top:5px;"><strong>${esc(req.requester_name)}</strong><br>${fmtDate(req.created_at)}</p>
+          </div>
+          <div style="width:22%">
+            <p>Kepala Departemen</p><br><br><br>
+            <p style="border-top:1px solid #000; padding-top:5px;"><strong>${esc(req.approver_head_name || '—')}</strong><br>${fmtDate(req.approver_head_date)}</p>
+          </div>
+          <div style="width:22%">
+            <p>Kepala Engineering</p><br><br><br>
+            <p style="border-top:1px solid #000; padding-top:5px;"><strong>${esc(req.approver_eng_name || '—')}</strong><br>${fmtDate(req.approver_eng_date)}</p>
+          </div>
+          <div style="width:22%">
+            <p>Direktur</p><br><br><br>
+            <p style="border-top:1px solid #000; padding-top:5px;"><strong>${esc(req.approver_dir_name || '—')}</strong><br>${fmtDate(req.approver_dir_date)}</p>
+          </div>
+        </div>
       </div>
 
       <div class="no-print">
@@ -615,9 +658,9 @@ function pageWorkOrders() {
         
         ${items.length > 0 ? `
         <div style="margin-top:15px;">
-          <h4 style="font-size:13px; margin-bottom:10px;">Daftar Barang yang Harus Diambil di Gudang:</h4>
+          <h4 style="font-size:13px; margin-bottom:10px;">Daftar Barang & Pengambilan Gudang:</h4>
           <table class="table" style="width:100%; font-size:12px;">
-            <thead><tr><th>Nama Barang</th><th>Qty Diminta</th><th>Stok Tersedia</th><th>Aksi</th></tr></thead>
+            <thead><tr><th>Nama Barang</th><th>Qty</th><th>Stok</th><th>Aksi</th></tr></thead>
             <tbody>
               ${items.map(it => {
                 const item = S.items[it.item_id] || {item_name: 'Dihapus', stock: 0};
@@ -628,23 +671,30 @@ function pageWorkOrders() {
                   <td><strong style="color:${isOutOfStock?'var(--red)':'var(--green)'}">${item.stock}</strong></td>
                   <td>
                     ${isOutOfStock ? 
-                      `<button class="btn btn-warning btn-sm" onclick="requestPurchase('${id}', '${it.item_id}', ${it.qty})">⚠️ Stok Kurang, Ajukan Pembelian</button>` : 
-                      `<button class="btn btn-success btn-sm" onclick="issueStock('${id}', '${it.item_id}', ${it.qty})">✅ Ambil Barang (Potong Stok)</button>`
+                      `<button class="btn btn-warning btn-sm" onclick="requestPurchase('${id}', '${it.item_id}', ${it.qty})">Ajukan Beli</button>` : 
+                      (S.user.role === 'WAREHOUSE' || isAdmin()) ? 
+                      `<button class="btn btn-success btn-sm" onclick="issueStock('${id}', '${it.item_id}', ${it.qty})">✅ Ambil Barang</button>` : 
+                      `<span class="badge gray">Menunggu Gudang</span>`
                     }
                   </td>
                 </tr>`;
               }).join('')}
             </tbody>
           </table>
-        </div>` : '<p class="muted">Tidak ada permintaan spare part di awal.</p>'}
+        </div>` : '<p class="muted">Tidak ada permintaan spare part.</p>'}
 
+        ${canEdit ? `
         <form class="form-grid" onsubmit="saveWO(event,'${id}')" style="margin-top:20px; border-top:1px solid #eee; padding-top:15px;">
-          <label>Status Pekerjaan<select id="wo_status_${id}">${['OPEN','IN_PROGRESS','COMPLETED'].map(s => `<option value="${s}" ${wo.status===s?'selected':''}>${s}</option>`).join('')}</select></label>
+          <label>Update Progres Status<select id="wo_status_${id}">${['OPEN','IN_PROGRESS','COMPLETED'].map(s => `<option value="${s}" ${wo.status===s?'selected':''}>${s}</option>`).join('')}</select></label>
           <label>Hasil Tes<input id="wo_test_${id}" value="${esc(wo.test_result||'')}"></label>
           <label class="span-2">Diagnosa<textarea id="wo_diag_${id}">${esc(wo.diagnosis||'')}</textarea></label>
           <label class="span-2">Tindakan<textarea id="wo_act_${id}">${esc(wo.action_taken||'')}</textarea></label>
-          <div class="form-actions"><button class="btn btn-primary">Simpan Catatan WO</button></div>
-        </form>
+          <div class="form-actions"><button class="btn btn-primary">Simpan Catatan</button></div>
+        </form>` : `
+        <div style="margin-top:15px; background:#f8fafc; padding:10px; border-radius:8px;">
+           <p><strong>Diagnosa:</strong> ${esc(wo.diagnosis||'Belum diisi')}</p>
+           <p><strong>Tindakan:</strong> ${esc(wo.action_taken||'Belum diisi')}</p>
+        </div>`}
       </div>
     </section>`;
   }).join('') || '<div class="panel empty">Belum ada Work Order.</div>'}`;
@@ -660,47 +710,88 @@ function printSPK(id) {
 async function saveWO(e, id) {
   e.preventDefault(); const status = $('#wo_status_'+id).value;
   await db.ref('workorders/' + id).update({ status, diagnosis: $('#wo_diag_'+id).value, action_taken: $('#wo_act_'+id).value, test_result: $('#wo_test_'+id).value, updated_at: now() });
-  flash('Data Work Order disimpan.'); renderApp();
+  flash('Progres Work Order diperbarui.'); renderApp();
 }
 
-// FUNGSI POTONG STOK GUDANG
+// FUNGSI POTONG STOK GUDANG + SIMPAN HISTORI
 async function issueStock(woId, itemId, qty) {
-  if(!confirm(`Potong stok sebanyak ${qty}?`)) return;
+  if(!confirm(`Potong stok sebanyak ${qty} untuk perbaikan ini?`)) return;
   const item = S.items[itemId];
   if(item.stock < qty) return alert('Stok tidak cukup!');
   
   const newStock = item.stock - qty;
+  const wo = S.workorders[woId];
+  const req = S.requests[wo.request_id];
+
+  // 1. Update Master Barang
   await db.ref('items/' + itemId).update({ stock: newStock });
   
-  // Update WO items (kurangi qty atau hapus)
-  const wo = S.workorders[woId];
-  const updatedItems = wo.items.filter(it => it.item_id !== itemId); // Sederhananya, hapus dari list karena sudah diambil
+  // 2. Catat ke Histori Stok
+  await db.ref('stock_history/' + uid()).set({
+    item_id: itemId,
+    item_name: item.item_name,
+    qty_out: qty,
+    balance_after: newStock,
+    ref_no: wo.wo_no,
+    description: `Perbaikan: ${req.asset} (${req.description})`,
+    timestamp: now(),
+    user: S.user.name
+  });
+
+  // 3. Hapus dari daftar permintaan WO agar tidak diambil 2x
+  const updatedItems = wo.items.filter(it => it.item_id !== itemId); 
   await db.ref('workorders/' + woId).update({ items: updatedItems });
   
-  flash('Stok berhasil dipotong dan barang siap diambil.');
+  flash('Stok berhasil dipotong. Histori tercatat.');
   renderApp();
 }
 
-// FUNGSI AJUKAN PEMBELIAN JIKA STOK KOSONG
 async function requestPurchase(woId, itemId, qty) {
   const item = S.items[itemId];
   await db.ref('purchases/' + uid()).set({ 
-    wo_id: woId, 
-    item_name: item ? item.item_name : 'Unknown', 
-    qty: qty, 
-    status: 'PENDING', 
-    requester_name: S.user.name, 
-    created_at: now() 
+    wo_id: woId, item_name: item ? item.item_name : 'Unknown', qty: qty, status: 'PENDING', requester_name: S.user.name, created_at: now() 
   });
-  flash('Pengajuan pembelian berhasil dikirim ke Admin.');
-  renderApp();
+  flash('Pengajuan pembelian dikirim.'); renderApp();
+}
+
+/* ============================================================
+   10. KARTU STOK & HISTORI
+   ============================================================ */
+function pageStockCard() {
+  const historyRows = Object.values(S.stock_history).sort((a,b) => b.timestamp - a.timestamp);
+  return `<div class="page-head"><div><div class="eyebrow">INVENTORY</div><h1>Kartu Stok & Histori Pengeluaran</h1></div></div>
+  
+  <section class="panel">
+    <div class="panel-head"><h2>Saldo Stok Saat Ini</h2></div>
+    <div class="table-wrap"><table><thead><tr><th>Kode</th><th>Nama Barang</th><th>Satuan</th><th class="num">Saldo Akhir</th></tr></thead><tbody>
+      ${Object.entries(S.items).map(([id,i]) => `<tr>
+        <td><strong>${esc(i.item_code)}</strong></td><td>${esc(i.item_name)}</td><td>${esc(i.unit)}</td>
+        <td class="num"><strong>${i.stock||0}</strong></td>
+      </tr>`).join('')}
+    </tbody></table></div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head"><h2>Histori Pemotongan Stok (Untuk Perbaikan)</h2></div>
+    <div class="table-wrap"><table><thead><tr><th>Tanggal</th><th>Nama Barang</th><th>Untuk Perbaikan Apa</th><th>Ref WO</th><th class="num">Qty Keluar</th><th class="num">Sisa Saldo</th><th>Oleh</th></tr></thead><tbody>
+      ${historyRows.map(h => `<tr>
+        <td>${new Date(h.timestamp).toLocaleString()}</td>
+        <td>${esc(h.item_name)}</td>
+        <td>${esc(h.description)}</td>
+        <td><strong>${esc(h.ref_no)}</strong></td>
+        <td class="num" style="color:var(--red)">-${h.qty_out}</td>
+        <td class="num"><strong>${h.balance_after}</strong></td>
+        <td>${esc(h.user)}</td>
+      </tr>`).join('') || '<tr><td colspan="7" class="empty">Belum ada histori pemotongan stok.</td></tr>'}
+    </tbody></table></div>
+  </section>`;
 }
 
 function pagePurchases() {
   const rows = Object.entries(S.purchases);
   return `<div class="page-head"><div><div class="eyebrow">PROCUREMENT</div><h1>Permintaan Pembelian</h1></div></div>
   <section class="panel"><div class="table-wrap"><table><thead><tr><th>Tanggal</th><th>Nama Barang</th><th>Qty</th><th>Status</th></tr></thead><tbody>
-    ${rows.map(([id,p]) => `<tr><td>${new Date(p.created_at).toLocaleDateString()}</td><td>${esc(p.item_name)}</td><td>${p.qty}</td><td>${badge(p.status)}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">Belum ada pembelian.</td></tr>'}
+    ${rows.map(([id,p]) => `<tr><td>${fmtDate(p.created_at)}</td><td>${esc(p.item_name)}</td><td>${p.qty}</td><td>${badge(p.status)}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">Belum ada pembelian.</td></tr>'}
   </tbody></table></div></section>`;
 }
 
