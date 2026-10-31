@@ -571,23 +571,18 @@ async function resetUserPassword(uid) {
   }
 
   try {
-    // Gunakan secondary app untuk login sebagai user tersebut
     const resetAppName = "ResetApp_" + Date.now();
     const resetApp = firebase.initializeApp(firebaseConfig, resetAppName);
     const resetAuth = resetApp.auth();
 
-    // Login menggunakan password lama
     const email = u.username + FAKE_EMAIL_DOMAIN;
     const cred = await resetAuth.signInWithEmailAndPassword(email, u.plain_password);
 
-    // Update ke password baru
     await cred.user.updatePassword(newPw);
 
-    // Logout dan hapus app
     await resetAuth.signOut();
     await resetApp.delete();
 
-    // Update DB
     await db.ref('users/' + uid).update({ plain_password: newPw });
     
     flash(`Password untuk ${u.username} berhasil direset menjadi: ${newPw}`);
@@ -610,7 +605,7 @@ async function deleteUser(uid) {
 }
 
 /* ============================================================
-   9. PERMINTAAN & DETAIL TRACKING
+   9. PERMINTAAN (DENGAN INPUT BARANG) & DETAIL TRACKING
    ============================================================ */
 function pageRequests() {
   const rows = Object.entries(S.requests).sort((a,b) => b[1].created_at - a[1].created_at);
@@ -626,6 +621,21 @@ function pageRequests() {
         </select></label>
         <label>Aset / Mesin<input id="req_asset" placeholder="Cth: Mesin Filling 02" required></label>
         <label class="span-2">Deskripsi Kerusakan<textarea id="req_desc" required></textarea></label>
+        
+        <div class="span-2" style="background:#f8fafc; padding:10px; border-radius:8px;">
+          <label>Spare Part Dibutuhkan (Opsional)</label>
+          <div id="req_items_container">
+            <div style="display:flex; gap:10px; margin-bottom:10px;" class="req-item-row">
+               <select class="req-item-select" style="flex:2;">
+                 <option value="">— Pilih Barang —</option>
+                 ${Object.entries(S.items).map(([id,i]) => `<option value="${id}">${esc(i.item_name)} (Stok: ${i.stock||0})</option>`).join('')}
+               </select>
+               <input type="number" class="req-item-qty" placeholder="Qty" style="flex:1;">
+            </div>
+          </div>
+          <button type="button" class="btn btn-light btn-sm" onclick="addReqItemRow()">+ Tambah Baris</button>
+        </div>
+        
         <div class="form-actions"><button class="btn btn-primary">Kirim Permintaan</button></div>
       </form>
     </section>` : ''}
@@ -663,6 +673,24 @@ function pageRequests() {
         </tr>`;
       }).join('') || `<tr><td colspan="7" class="empty">Belum ada permintaan.</td></tr>`}
     </tbody></table></div></section>`;
+}
+
+function addReqItemRow() {
+  const container = document.getElementById('req_items_container');
+  const newRow = document.createElement('div');
+  newRow.className = 'req-item-row';
+  newRow.style.display = 'flex';
+  newRow.style.gap = '10px';
+  newRow.style.marginBottom = '10px';
+  newRow.innerHTML = `
+    <select class="req-item-select" style="flex:2;">
+      <option value="">— Pilih Barang —</option>
+      ${Object.entries(S.items).map(([id,i]) => `<option value="${id}">${esc(i.item_name)} (Stok: ${i.stock||0})</option>`).join('')}
+    </select>
+    <input type="number" class="req-item-qty" placeholder="Qty" style="flex:1;">
+    <button type="button" class="btn btn-danger btn-sm" onclick="this.parentElement.remove()">X</button>
+  `;
+  container.appendChild(newRow);
 }
 
 function viewDetail(reqId) {
@@ -774,12 +802,23 @@ async function saveRequest(e) {
   e.preventDefault();
   const reqId = uid();
   const deptId = $('#req_dept').value;
+  
+  let items = [];
+  const rows = document.querySelectorAll('.req-item-row');
+  rows.forEach(row => {
+    const itemId = row.querySelector('.req-item-select').value;
+    const qty = parseFloat(row.querySelector('.req-item-qty').value) || 0;
+    if (itemId && qty > 0) {
+      items.push({ item_id: itemId, qty: qty });
+    }
+  });
 
   await db.ref('requests/' + reqId).set({ 
     request_no: 'PR-'+Date.now().toString().slice(-6), 
     dept_id: deptId, 
     asset: $('#req_asset').value,
     description: $('#req_desc').value, 
+    items: items,
     requester_name: S.user.name, 
     status: 'PENDING_HEAD', 
     created_at: now() 
@@ -827,11 +866,12 @@ function pageWarehouse() {
       </div>
       
       ${isRevision ? `<div class="alert error" style="margin-bottom:15px;">⚠️ Menunggu Persetujuan Revisi Qty dari Eng Manager & Direktur.</div>` : ''}
+      ${items.length === 0 ? `<div class="alert error" style="margin-bottom:15px;">⚠️ Belum ada barang yang didaftarkan oleh Engineering untuk SPK ini.</div>` : ''}
 
       <form onsubmit="processWarehouse(event, '${id}')">
         <div class="form-grid" style="margin-bottom:15px;">
-          <label>Tanggal Pengambilan Barang<input type="date" id="pickup_date_${id}" value="${pickupDate}" required ${isRevision ? 'disabled' : ''}></label>
-          <label>Catatan (Opsional)<input id="pickup_notes_${id}" value="${esc(wo.variance_notes||'')}" placeholder="Cth: Ada barang pengganti" ${isRevision ? 'disabled' : ''}></label>
+          <label>Tanggal Pengambilan Barang<input type="date" id="pickup_date_${id}" value="${pickupDate}" required ${isRevision || items.length===0 ? 'disabled' : ''}></label>
+          <label>Catatan (Opsional)<input id="pickup_notes_${id}" value="${esc(wo.variance_notes||'')}" placeholder="Cth: Ada barang pengganti" ${isRevision || items.length===0 ? 'disabled' : ''}></label>
         </div>
         
         <table class="table" style="width:100%; font-size:12px; margin-bottom:15px;">
@@ -848,13 +888,13 @@ function pageWarehouse() {
                 <td>${esc(item.item_name)}</td>
                 <td>${it.qty}</td>
                 <td><strong style="color:${item.stock < actualQty ? 'var(--red)' : 'var(--green)'}">${item.stock}</strong></td>
-                <td><input type="number" class="actual-qty" data-item-id="${it.item_id}" data-req-qty="${it.qty}" value="${actualQty}" min="0" required ${isRevision ? 'disabled' : ''} style="width:100%; padding:5px;"></td>
+                <td><input type="number" class="actual-qty" data-item-id="${it.item_id}" data-req-qty="${it.qty}" value="${actualQty}" min="0" required ${isRevision || items.length===0 ? 'disabled' : ''} style="width:100%; padding:5px;"></td>
               </tr>`;
             }).join('')}
           </tbody>
         </table>
 
-        ${!isRevision ? `
+        ${!isRevision && items.length > 0 ? `
         <div style="display:flex; gap:10px; justify-content:flex-end;">
           <button type="submit" class="btn btn-primary">Posting & Potong Stok</button>
         </div>
@@ -958,6 +998,8 @@ function pageApprovals() {
     if(log.stage === 'ENG_MANAGER') stageName = 'Kepala Engineering';
     if(log.stage === 'DIRECTOR') stageName = 'Direktur';
 
+    const reqItems = r.items || [];
+
     if (isVariance) {
       return `<section class="panel" style="border-color:var(--amber)">
         <div class="panel-head">
@@ -981,6 +1023,16 @@ function pageApprovals() {
         <p><strong>Pemohon:</strong> ${esc(r.requester_name)}</p>
         <p><strong>Aset:</strong> ${esc(r.asset||'—')}</p>
         <p><strong>Deskripsi:</strong> ${esc(r.description)}</p>
+        
+        ${reqItems.length > 0 ? `
+          <div style="background:#f8fafc; padding:10px; border-radius:8px; margin-top:10px;">
+            <p class="muted" style="font-size:12px; margin-bottom:5px;">Barang yang diminta:</p>
+            <ul style="font-size:12px; margin-left:20px;">
+              ${reqItems.map(it => `<li>${esc(S.items[it.item_id]?.item_name || 'Dihapus')} : ${it.qty}</li>`).join('')}
+            </ul>
+          </div>
+        ` : ''}
+
         <div style="margin-top:15px; display:flex; gap:10px;">
           <button class="btn btn-success btn-sm" onclick="decideApproval('${logId}','APPROVED')">Setujui (Approve)</button>
           <button class="btn btn-danger btn-sm" onclick="decideApproval('${logId}','REJECTED')">Tolak (Reject)</button>
@@ -1071,7 +1123,13 @@ async function decideApproval(logId, dec) {
     updateData.status = 'APPROVED';
     const existingWO = Object.values(S.workorders).find(w => w.request_id === log.request_id);
     if(!existingWO) {
-      await db.ref('workorders/' + uid()).set({ wo_no: 'WO-'+Date.now().toString().slice(-6), request_id: log.request_id, items: [], status: 'OPEN', created_at: now() });
+      await db.ref('workorders/' + uid()).set({ 
+        wo_no: 'WO-'+Date.now().toString().slice(-6), 
+        request_id: log.request_id, 
+        items: req.items || [], // <--- DISINI BARANG DICOPY DARI REQUEST KE WO
+        status: 'OPEN', 
+        created_at: now() 
+      });
     }
   }
   await db.ref('requests/' + log.request_id).update(updateData);
@@ -1083,7 +1141,7 @@ async function decideApproval(logId, dec) {
    ============================================================ */
 function pageWorkOrders() {
   const rows = Object.entries(S.workorders).sort((a,b) => (b[1].created_at||0) - (a[1].created_at||0));
-  const canEdit = S.user.role === 'ENG_MANAGER'; 
+  const canEdit = S.user.role === 'ENG_MANAGER' || isAdmin(); // Admin & Eng Manager bisa edit
   const isAdminView = isAdmin();
   
   return `<div class="page-head"><div><div class="eyebrow">ENGINEERING</div><h1>Work Order (SPK)</h1></div></div>
