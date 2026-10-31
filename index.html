@@ -131,7 +131,7 @@ function isAdmin() { return S.user && S.user.role === 'ADMIN'; }
 function isGudang() { return S.user && S.user.role === 'WAREHOUSE'; }
 
 function badge(s) {
-  const map = {APPROVED:'green',COMPLETED:'green',REJECTED:'red',PENDING:'amber',PENDING_HEAD:'amber',PENDING_MANAGER:'amber',PENDING_DIRECTOR:'amber',IN_PROGRESS:'blue',OPEN:'blue',PENDING_WAREHOUSE_APPROVAL:'amber'};
+  const map = {APPROVED:'green',COMPLETED:'green',REJECTED:'red',PENDING:'amber',PENDING_HEAD:'amber',PENDING_MANAGER:'amber',PENDING_DIRECTOR:'amber',IN_PROGRESS:'blue',OPEN:'blue',PENDING_WAREHOUSE_APPROVAL:'amber',ORDERED:'blue',RECEIVED:'green'};
   return `<span class="badge ${map[s]||'gray'}">${esc(s||'').replace(/_/g,' ')}</span>`;
 }
 function flash(msg, type='success') {
@@ -188,7 +188,7 @@ function getPrintSpkHtml(id, wo, req) {
     <h4>Spare Part (Aktual):</h4>
     <table border="1" cellpadding="8" style="width:100%; border-collapse:collapse; margin-bottom:20px;">
       <tr><th>Nama Barang</th><th>Qty</th></tr>
-      ${(issuedItems.length > 0 ? issuedItems : items).map(it => `<tr><td>${esc(S.items[it.item_id]?.item_name || 'Barang Dihapus')}</td><td>${it.qty}</td></tr>`).join('')}
+      ${(issuedItems.length > 0 ? issuedItems : items).map(it => `<tr><td>${esc(S.items[it.item_id]?.item_name || it.item_name || 'Barang Dihapus')}</td><td>${it.qty}</td></tr>`).join('')}
     </table>` : ''}
     
     <div style="margin-bottom:20px;">
@@ -459,7 +459,6 @@ function pageIncoming() {
     </section>`;
 }
 
-// Fungsi untuk mencocokkan input teks dengan ID Barang (Penerimaan)
 function resolveIncomingItemId(inputEl) {
   const val = inputEl.value;
   const datalist = document.getElementById('items-data-in');
@@ -1037,7 +1036,7 @@ function pageWarehouse() {
           <thead><tr><th>Barang Diminta</th><th>Qty Diminta</th><th>Stok Sistem</th><th style="width:150px;">Qty Aktual (Disiapkan)</th></tr></thead>
           <tbody>
             ${items.map(it => {
-              const item = S.items[it.item_id] || {item_name: 'Dihapus', stock: 0};
+              const item = S.items[it.item_id] || {item_name: it.item_name || 'Dihapus', stock: 0};
               let actualQty = it.qty;
               if (wo.issued_items) {
                 const issued = wo.issued_items.find(x => x.item_id === it.item_id);
@@ -1169,7 +1168,7 @@ function pageApprovals() {
         <p><strong>Catatan Gudang:</strong> ${esc(wo?.variance_notes||'—')}</p>
         <p class="muted" style="font-size:12px; margin-bottom:5px;">Daftar Qty Aktual yang diajukan:</p>
         <ul style="font-size:12px; margin-left:20px; margin-bottom:15px;">
-          ${(wo?.issued_items||[]).map(it => `<li>${esc(S.items[it.item_id]?.item_name)} : <strong>${it.qty}</strong></li>`).join('')}
+          ${(wo?.issued_items||[]).map(it => `<li>${esc(S.items[it.item_id]?.item_name || it.item_name)} : <strong>${it.qty}</strong></li>`).join('')}
         </ul>
         <div style="margin-top:15px; display:flex; gap:10px;">
           <button class="btn btn-success btn-sm" onclick="decideVariance('${logId}','APPROVED')">Setujui Revisi</button>
@@ -1313,7 +1312,10 @@ function pageWorkOrders() {
     const issuedHistory = Object.entries(S.stock_history)
       .filter(([hid, h]) => h.ref_no === wo.wo_no && h.qty_out > 0)
       .sort((a,b) => b[1].timestamp - a[1].timestamp);
-    
+      
+    // Cari antrean pembelian untuk WO ini
+    const pendingPurchases = Object.entries(S.purchases).filter(([pid, p]) => p.wo_id === id);
+
     return `<section class="panel">
       <div class="panel-head no-print">
         <div><h2>${esc(wo.wo_no)}</h2><p class="muted">Pemohon: ${esc(req.requester_name||'—')} | Dept: ${esc((S.departments[req.dept_id]||{}).name||'—')}</p></div>
@@ -1334,7 +1336,7 @@ function pageWorkOrders() {
           <thead><tr><th>Barang</th><th>Qty Diminta</th><th>Status</th></tr></thead>
           <tbody>
             ${items.map(it => {
-              const item = S.items[it.item_id] || {item_name: 'Dihapus', stock: 0};
+              const item = S.items[it.item_id] || {item_name: it.item_name || 'Dihapus', stock: 0};
               return `<tr>
                 <td>${esc(item.item_name)}</td>
                 <td>${it.qty}</td>
@@ -1350,7 +1352,7 @@ function pageWorkOrders() {
         <table style="margin-bottom:20px;">
           <thead><tr><th>Barang</th><th>Qty Aktual</th></tr></thead>
           <tbody>
-            ${issuedItems.map(it => `<tr><td>${esc(S.items[it.item_id]?.item_name || '—')}</td><td>${it.qty}</td></tr>`).join('')}
+            ${issuedItems.map(it => `<tr><td>${esc(S.items[it.item_id]?.item_name || it.item_name || '—')}</td><td>${it.qty}</td></tr>`).join('')}
           </tbody>
         </table>` : ''}
 
@@ -1378,7 +1380,7 @@ function pageWorkOrders() {
             <thead><tr><th>Nama Barang</th><th>Qty</th><th>Stok Tersedia</th></tr></thead>
             <tbody>
               ${items.map(it => {
-                const item = S.items[it.item_id] || {item_name: 'Dihapus', stock: 0};
+                const item = S.items[it.item_id] || {item_name: it.item_name || 'Dihapus', stock: 0};
                 return `<tr>
                   <td>${esc(item.item_name)}</td>
                   <td>${it.qty}</td>
@@ -1407,6 +1409,23 @@ function pageWorkOrders() {
         </div>
 
         ${canEdit ? `
+        <div style="margin-top:20px; background:#fffbf0; padding:15px; border-radius:8px; border:1px solid #f2d08a;">
+          <h4 style="font-size:13px; margin-bottom:10px; color:#8a4b00;">🛒 Beli Barang Baru (Tidak Ada di Stok)</h4>
+          <form style="display:flex; gap:10px;" onsubmit="requestNewPurchase(event, '${id}')">
+            <input type="text" id="pur_name_${id}" placeholder="Nama Barang Baru" required style="flex:2;">
+            <input type="number" id="pur_qty_${id}" placeholder="Qty" required style="flex:1;">
+            <button class="btn btn-warning">Ajukan Pembelian</button>
+          </form>
+          
+          ${pendingPurchases.length > 0 ? `
+          <div style="margin-top:15px;">
+            <p class="muted" style="font-size:11px; margin-bottom:5px;">Antrean Pembelian untuk SPK ini:</p>
+            <ul style="font-size:12px; margin-left:20px;">
+              ${pendingPurchases.map(([pid, p]) => `<li>${esc(p.item_name)} (Qty: ${p.qty}) - Status: ${badge(p.status)}</li>`).join('')}
+            </ul>
+          </div>` : ''}
+        </div>
+
         <form class="form-grid" onsubmit="saveWO(event,'${id}')" style="margin-top:20px; border-top:1px solid #eee; padding-top:15px;">
           <label>Update Progres Status<select id="wo_status_${id}">${['OPEN','IN_PROGRESS','COMPLETED'].map(s => `<option value="${s}" ${wo.status===s?'selected':''}>${s}</option>`).join('')}</select></label>
           <label>Hasil Tes<input id="wo_test_${id}" value="${esc(wo.test_result||'')}"></label>
@@ -1457,6 +1476,25 @@ function pageWorkOrders() {
   return `<div class="page-head"><div><div class="eyebrow">ENGINEERING</div><h1>Work Order (SPK)</h1></div></div>
     ${activeHtml}
     ${completedHtml}`;
+}
+
+async function requestNewPurchase(e, woId) {
+  e.preventDefault();
+  const name = $('#pur_name_'+woId).value;
+  const qty = parseFloat($('#pur_qty_'+woId).value);
+  if(!name || qty <= 0) return;
+
+  await db.ref('purchases/' + uid()).set({
+    wo_id: woId,
+    item_name: name,
+    qty: qty,
+    status: 'PENDING',
+    requester_name: S.user.name,
+    created_at: now()
+  });
+
+  flash('Pengajuan pembelian barang baru berhasil dikirim.');
+  renderApp();
 }
 
 async function reverseWOTransaction(historyId, itemId, qty, woId) {
@@ -1562,18 +1600,72 @@ async function saveWO(e, id) {
   flash('Progres Work Order diperbarui.'); renderApp();
 }
 
-async function requestPurchase(woId, itemId, qty) {
-  const item = S.items[itemId];
-  await db.ref('purchases/' + uid()).set({ wo_id: woId, item_name: item ? item.item_name : 'Unknown', qty: qty, status: 'PENDING', requester_name: S.user.name, created_at: now() });
-  flash('Pengajuan pembelian dikirim.'); renderApp();
+/* ============================================================
+   12. PEMBELIAN (ADMIN)
+   ============================================================ */
+function pagePurchases() {
+  const rows = Object.entries(S.purchases).sort((a,b) => b[1].created_at - a[1].created_at);
+  return `<div class="page-head"><div><div class="eyebrow">PROCUREMENT</div><h1>Antrean Pembelian</h1></div></div>
+  <section class="panel"><div class="table-wrap"><table><thead><tr><th>Tanggal</th><th>Nama Barang</th><th>Qty</th><th>Pemohon</th><th>Status</th><th>Aksi</th></tr></thead><tbody>
+    ${rows.map(([id,p]) => `<tr>
+      <td>${fmtDate(p.created_at)}</td>
+      <td>${esc(p.item_name)}</td>
+      <td>${p.qty}</td>
+      <td>${esc(p.requester_name)}</td>
+      <td>${badge(p.status)}</td>
+      <td>
+        <select onchange="updatePurchaseStatus('${id}', this.value)" style="padding:5px; font-size:12px;">
+          <option value="PENDING" ${p.status==='PENDING'?'selected':''}>Pending</option>
+          <option value="ORDERED" ${p.status==='ORDERED'?'selected':''}>Dipesan (Ordered)</option>
+          <option value="RECEIVED" ${p.status==='RECEIVED'?'selected':''}>Diterima (Received)</option>
+        </select>
+      </td>
+    </tr>`).join('') || '<tr><td colspan="6" class="empty">Belum ada antrean pembelian.</td></tr>'}
+  </tbody></table></div></section>`;
 }
 
-function pagePurchases() {
-  const rows = Object.entries(S.purchases);
-  return `<div class="page-head"><div><div class="eyebrow">PROCUREMENT</div><h1>Permintaan Pembelian</h1></div></div>
-  <section class="panel"><div class="table-wrap"><table><thead><tr><th>Tanggal</th><th>Nama Barang</th><th>Qty</th><th>Status</th></tr></thead><tbody>
-    ${rows.map(([id,p]) => `<tr><td>${fmtDate(p.created_at)}</td><td>${esc(p.item_name)}</td><td>${p.qty}</td><td>${badge(p.status)}</td></tr>`).join('') || '<tr><td colspan="4" class="empty">Belum ada pembelian.</td></tr>'}
-  </tbody></table></div></section>`;
+async function updatePurchaseStatus(purchaseId, newStatus) {
+  if(newStatus === 'RECEIVED') {
+    if(!confirm('Tandai barang sudah diterima? Barang akan otomatis dimasukkan ke daftar kebutuhan Gudang (Work Order).')) return;
+  }
+
+  const p = S.purchases[purchaseId];
+  await db.ref('purchases/' + purchaseId).update({ status: newStatus });
+
+  if (newStatus === 'RECEIVED') {
+    const wo = S.workorders[p.wo_id];
+    if(wo) {
+      // Cari item_id di master barang, jika tidak ada (barang baru), buat item_id dummy atau minta admin input stok
+      const existingItem = Object.entries(S.items).find(([iid, i]) => i.item_name.toLowerCase() === p.item_name.toLowerCase());
+      
+      const itemId = existingItem ? existingItem[0] : uid(); // Jika tidak ada, kita buat ID baru
+      
+      // Jika benar-benar barang baru dan belum ada di Master, kita tambahkan (opsional, tergantung kebutuhan)
+      if(!existingItem) {
+        await db.ref('items/' + itemId).set({
+          item_code: 'NEW-' + Date.now().toString().slice(-4),
+          item_name: p.item_name,
+          unit: 'PCS',
+          stock: 0
+        });
+      }
+
+      const items = wo.items || [];
+      const existingWOItem = items.find(it => it.item_id === itemId);
+      
+      if (existingWOItem) {
+        existingWOItem.qty += p.qty;
+      } else {
+        items.push({ item_id: itemId, qty: p.qty });
+      }
+
+      await db.ref('workorders/' + p.wo_id).update({ items });
+      flash('Status diperbarui. Barang telah masuk ke daftar Work Order.');
+    }
+  } else {
+    flash('Status pembelian diperbarui.');
+  }
+  renderApp();
 }
 
 function pageDashboard() {
