@@ -146,6 +146,58 @@ function getPendingApproverName(reqId) {
   return null;
 }
 
+// Helper untuk membuat HTML Cetak SPK agar tidak duplikat kode
+function getPrintSpkHtml(id, wo, req) {
+  const items = wo.items || [];
+  const issuedItems = wo.issued_items || [];
+  return `
+    <div style="text-align:center; border-bottom:3px double #000; padding-bottom:10px; margin-bottom:20px;">
+      <h1 style="margin:0;font-size:24px;">${esc(S.settings.company?.name || 'NAMA PERUSAHAAN')}</h1>
+      <p style="margin:5px 0;">${esc(S.settings.company?.address || 'Alamat Perusahaan')}</p>
+    </div>
+    <h3 style="text-align:center; text-decoration:underline; margin-bottom:15px;">SURAT PERINTAH KERJA (SPK)</h3>
+    <p style="text-align:right;">No: <strong>${esc(wo.wo_no)}</strong></p>
+    <table style="width:100%; margin-bottom:15px; border:none;">
+      <tr><td style="width:25%;border:none;">Tanggal</td><td style="border:none;">: ${fmtDate(wo.created_at)}</td></tr>
+      <tr><td style="border:none;">Pemohon</td><td style="border:none;">: ${esc(req.requester_name||'—')}</td></tr>
+      <tr><td style="border:none;">Aset</td><td style="border:none;">: ${esc(req.asset||'—')}</td></tr>
+      <tr><td style="border:none;">Deskripsi</td><td style="border:none;">: ${esc(req.description||'—')}</td></tr>
+    </table>
+    
+    ${(issuedItems.length > 0 ? issuedItems : items).length > 0 ? `
+    <h4>Spare Part (Aktual):</h4>
+    <table border="1" cellpadding="8" style="width:100%; border-collapse:collapse; margin-bottom:20px;">
+      <tr><th>Nama Barang</th><th>Qty</th></tr>
+      ${(issuedItems.length > 0 ? issuedItems : items).map(it => `<tr><td>${esc(S.items[it.item_id]?.item_name || 'Barang Dihapus')}</td><td>${it.qty}</td></tr>`).join('')}
+    </table>` : ''}
+    
+    <div style="margin-bottom:20px;">
+      <p><strong>Diagnosa:</strong> ${esc(wo.diagnosis||'—')}</p>
+      <p><strong>Tindakan:</strong> ${esc(wo.action_taken||'—')}</p>
+      <p><strong>Status:</strong> ${wo.status}</p>
+    </div>
+
+    <div style="display:flex; justify-content:space-between; margin-top:40px; text-align:center; font-size:12px;">
+      <div style="width:22%">
+        <p>Pemohon</p><br><br><br>
+        <p style="border-top:1px solid #000; padding-top:5px;"><strong>${esc(req.requester_name)}</strong><br>${fmtDate(req.created_at)}</p>
+      </div>
+      <div style="width:22%">
+        <p>Kepala Departemen</p><br><br><br>
+        <p style="border-top:1px solid #000; padding-top:5px;"><strong>${esc(req.approver_head_name || '—')}</strong><br>${fmtDate(req.approver_head_date)}</p>
+      </div>
+      <div style="width:22%">
+        <p>Kepala Engineering</p><br><br><br>
+        <p style="border-top:1px solid #000; padding-top:5px;"><strong>${esc(req.approver_eng_name || '—')}</strong><br>${fmtDate(req.approver_eng_date)}</p>
+      </div>
+      <div style="width:22%">
+        <p>Direktur</p><br><br><br>
+        <p style="border-top:1px solid #000; padding-top:5px;"><strong>${esc(req.approver_dir_name || '—')}</strong><br>${fmtDate(req.approver_dir_date)}</p>
+      </div>
+    </div>
+  `;
+}
+
 /* ============================================================
    4. AUTH & INIT
    ============================================================ */
@@ -450,7 +502,7 @@ function pageMutation() {
 }
 
 /* ============================================================
-   8. MANAJEMEN USER (DENGAN RESET PASSWORD)
+   8. MANAJEMEN USER
    ============================================================ */
 function pageUsers() {
   const rows = Object.entries(S.users);
@@ -591,7 +643,7 @@ async function resetUserPassword(uid) {
   } catch (err) {
     console.error(err);
     if (err.code === 'auth/wrong-password') {
-      alert("Gagal reset: Password lama di database tidak cocok dengan Firebase Auth. (Mungkin password pernah diubah lewat konsol Firebase).");
+      alert("Gagal reset: Password lama di database tidak cocok dengan Firebase Auth.");
     } else {
       alert("Gagal reset password: " + err.message);
     }
@@ -605,7 +657,7 @@ async function deleteUser(uid) {
 }
 
 /* ============================================================
-   9. PERMINTAAN (DENGAN INPUT BARANG) & DETAIL TRACKING
+   9. PERMINTAAN & DETAIL TRACKING
    ============================================================ */
 function pageRequests() {
   const rows = Object.entries(S.requests).sort((a,b) => b[1].created_at - a[1].created_at);
@@ -1126,7 +1178,7 @@ async function decideApproval(logId, dec) {
       await db.ref('workorders/' + uid()).set({ 
         wo_no: 'WO-'+Date.now().toString().slice(-6), 
         request_id: log.request_id, 
-        items: req.items || [], // <--- DISINI BARANG DICOPY DARI REQUEST KE WO
+        items: req.items || [], 
         status: 'OPEN', 
         created_at: now() 
       });
@@ -1140,12 +1192,16 @@ async function decideApproval(logId, dec) {
    11. WORK ORDER & SPK
    ============================================================ */
 function pageWorkOrders() {
-  const rows = Object.entries(S.workorders).sort((a,b) => (b[1].created_at||0) - (a[1].created_at||0));
-  const canEdit = S.user.role === 'ENG_MANAGER' || isAdmin(); // Admin & Eng Manager bisa edit
+  // Pisahkan antara yang belum selesai dan yang sudah COMPLETED
+  const allRows = Object.entries(S.workorders).sort((a,b) => (b[1].created_at||0) - (a[1].created_at||0));
+  const activeRows = allRows.filter(([id, wo]) => wo.status !== 'COMPLETED');
+  const completedRows = allRows.filter(([id, wo]) => wo.status === 'COMPLETED');
+
+  const canEdit = S.user.role === 'ENG_MANAGER' || isAdmin(); 
   const isAdminView = isAdmin();
-  
-  return `<div class="page-head"><div><div class="eyebrow">ENGINEERING</div><h1>Work Order (SPK)</h1></div></div>
-  ${rows.map(([id, wo]) => {
+
+  // Render Active Work Orders
+  let activeHtml = activeRows.map(([id, wo]) => {
     const req = S.requests[wo.request_id] || {};
     const items = wo.items || [];
     const issuedItems = wo.issued_items || []; 
@@ -1163,50 +1219,7 @@ function pageWorkOrders() {
       </div>
       
       <div id="print-spk-${id}" style="display:none;">
-        <div style="text-align:center; border-bottom:3px double #000; padding-bottom:10px; margin-bottom:20px;">
-          <h1 style="margin:0;font-size:24px;">${esc(S.settings.company?.name || 'NAMA PERUSAHAAN')}</h1>
-          <p style="margin:5px 0;">${esc(S.settings.company?.address || 'Alamat Perusahaan')}</p>
-        </div>
-        <h3 style="text-align:center; text-decoration:underline; margin-bottom:15px;">SURAT PERINTAH KERJA (SPK)</h3>
-        <p style="text-align:right;">No: <strong>${esc(wo.wo_no)}</strong></p>
-        <table style="width:100%; margin-bottom:15px; border:none;">
-          <tr><td style="width:25%;border:none;">Tanggal</td><td style="border:none;">: ${fmtDate(wo.created_at)}</td></tr>
-          <tr><td style="border:none;">Pemohon</td><td style="border:none;">: ${esc(req.requester_name||'—')}</td></tr>
-          <tr><td style="border:none;">Aset</td><td style="border:none;">: ${esc(req.asset||'—')}</td></tr>
-          <tr><td style="border:none;">Deskripsi</td><td style="border:none;">: ${esc(req.description||'—')}</td></tr>
-        </table>
-        
-        ${(issuedItems.length > 0 ? issuedItems : items).length > 0 ? `
-        <h4>Spare Part (Aktual):</h4>
-        <table border="1" cellpadding="8" style="width:100%; border-collapse:collapse; margin-bottom:20px;">
-          <tr><th>Nama Barang</th><th>Qty</th></tr>
-          ${(issuedItems.length > 0 ? issuedItems : items).map(it => `<tr><td>${esc(S.items[it.item_id]?.item_name || 'Barang Dihapus')}</td><td>${it.qty}</td></tr>`).join('')}
-        </table>` : ''}
-        
-        <div style="margin-bottom:20px;">
-          <p><strong>Diagnosa:</strong> ${esc(wo.diagnosis||'—')}</p>
-          <p><strong>Tindakan:</strong> ${esc(wo.action_taken||'—')}</p>
-          <p><strong>Status:</strong> ${wo.status}</p>
-        </div>
-
-        <div style="display:flex; justify-content:space-between; margin-top:40px; text-align:center; font-size:12px;">
-          <div style="width:22%">
-            <p>Pemohon</p><br><br><br>
-            <p style="border-top:1px solid #000; padding-top:5px;"><strong>${esc(req.requester_name)}</strong><br>${fmtDate(req.created_at)}</p>
-          </div>
-          <div style="width:22%">
-            <p>Kepala Departemen</p><br><br><br>
-            <p style="border-top:1px solid #000; padding-top:5px;"><strong>${esc(req.approver_head_name || '—')}</strong><br>${fmtDate(req.approver_head_date)}</p>
-          </div>
-          <div style="width:22%">
-            <p>Kepala Engineering</p><br><br><br>
-            <p style="border-top:1px solid #000; padding-top:5px;"><strong>${esc(req.approver_eng_name || '—')}</strong><br>${fmtDate(req.approver_eng_date)}</p>
-          </div>
-          <div style="width:22%">
-            <p>Direktur</p><br><br><br>
-            <p style="border-top:1px solid #000; padding-top:5px;"><strong>${esc(req.approver_dir_name || '—')}</strong><br>${fmtDate(req.approver_dir_date)}</p>
-          </div>
-        </div>
+        ${getPrintSpkHtml(id, wo, req)}
       </div>
 
       ${isAdminView ? `
@@ -1302,7 +1315,44 @@ function pageWorkOrders() {
         </div>`}
       </div>`}
     </section>`;
-  }).join('') || '<div class="panel empty">Belum ada Work Order.</div>'}`;
+  }).join('') || '<div class="panel empty">Tidak ada Work Order yang aktif.</div>';
+
+  // Render Completed Work Orders (Tabel Riwayat)
+  let completedHtml = `
+    <section class="panel" style="margin-top: 30px; border-color: #d0d5dd;">
+      <div class="panel-head">
+        <h2>Riwayat Work Order (Selesai)</h2>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>No. SPK</th><th>Tanggal Selesai</th><th>Aset</th><th>Pemohon</th><th>Status</th><th>Aksi</th></tr></thead>
+          <tbody>
+            ${completedRows.map(([id, wo]) => {
+              const req = S.requests[wo.request_id] || {};
+              const compDate = wo.completed_at ? fmtDateTime(wo.completed_at) : fmtDateTime(wo.updated_at);
+              return `<tr>
+                <td><strong>${esc(wo.wo_no)}</strong></td>
+                <td>${compDate}</td>
+                <td>${esc(req.asset||'—')}</td>
+                <td>${esc(req.requester_name||'—')}</td>
+                <td>${badge(wo.status)}</td>
+                <td>
+                  <button class="btn btn-light btn-sm" onclick="printSPK('${id}')">🖨 Cetak SPK</button>
+                </td>
+              </tr>
+              <!-- Hidden Print Div -->
+              <tr style="display:none;"><td colspan="6"><div id="print-spk-${id}">${getPrintSpkHtml(id, wo, req)}</div></td></tr>
+              `;
+            }).join('') || '<tr><td colspan="6" class="empty">Belum ada Work Order yang selesai.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+
+  return `<div class="page-head"><div><div class="eyebrow">ENGINEERING</div><h1>Work Order (SPK)</h1></div></div>
+    ${activeHtml}
+    ${completedHtml}`;
 }
 
 async function reverseWOTransaction(historyId, itemId, qty, woId) {
@@ -1388,7 +1438,24 @@ async function addItemToWO(e, woId) {
 
 async function saveWO(e, id) {
   e.preventDefault(); const status = $('#wo_status_'+id).value;
-  await db.ref('workorders/' + id).update({ status, diagnosis: $('#wo_diag_'+id).value, action_taken: $('#wo_act_'+id).value, test_result: $('#wo_test_'+id).value, updated_at: now() });
+  const wo = S.workorders[id];
+  const updateData = { status, diagnosis: $('#wo_diag_'+id).value, action_taken: $('#wo_act_'+id).value, test_result: $('#wo_test_'+id).value, updated_at: now() };
+
+  // Jika status COMPLETED, catat tanggal selesainya
+  if (status === 'COMPLETED') {
+    updateData.completed_at = now();
+  } else {
+    updateData.completed_at = null; // Reset jika diubah kembali
+  }
+
+  await db.ref('workorders/' + id).update(updateData);
+  
+  if (status === 'COMPLETED') {
+    await db.ref('requests/' + wo.request_id).update({status:'COMPLETED'});
+  } else {
+    await db.ref('requests/' + wo.request_id).update({status:'IN_PROGRESS'}); // Kembalikan jika di-reverse
+  }
+
   flash('Progres Work Order diperbarui.'); renderApp();
 }
 
