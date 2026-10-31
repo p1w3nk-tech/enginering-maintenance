@@ -84,7 +84,7 @@ tbody tr:hover{background:#f8fafc}.num{text-align:right}
    1. KONFIGURASI FIREBASE
    ============================================================ */
 const firebaseConfig = {
- apiKey: "AIzaSyBrgGfqLrEmNsOV64FWiPpBYt5tPx0ORDk",
+  apiKey: "AIzaSyBrgGfqLrEmNsOV64FWiPpBYt5tPx0ORDk",
   authDomain: "enginering-c421c.firebaseapp.com",
   databaseURL: "https://enginering-c421c-default-rtdb.asia-southeast1.firebasedatabase.app",
   projectId: "enginering-c421c",
@@ -269,12 +269,15 @@ function pageItems() {
           <label>Kode<input id="item_code" required value="${esc(S.editing?S.items[S.editing].item_code:'')}"></label>
           <label>Nama Barang<input id="item_name" required value="${esc(S.editing?S.items[S.editing].item_name:'')}"></label>
           <label>Satuan<input id="item_unit" required value="${esc(S.editing?S.items[S.editing].unit:'PCS')}"></label>
-          ${!S.editing ? '<label>Saldo Awal (Qty)<input type="number" id="item_stock" value="0" required></label>' : ''}
           <div class="form-actions">
             ${S.editing ? '<button type="button" class="btn btn-light" onclick="nav(\'items\')">Batal</button>' : ''}
             <button class="btn btn-primary">${S.editing ? 'Update Barang' : 'Simpan Barang'}</button>
           </div>
         </form>
+      </section>
+      <section class="panel"><div class="panel-head"><h2>📥 Import Excel/CSV</h2></div>
+        <p class="hint">Format kolom: <code>item_code, item_name, unit</code></p>
+        <input type="file" accept=".csv" onchange="importItems(event)">
       </section>
     </div>
     <section class="panel"><div class="table-wrap"><table><thead><tr><th>Kode</th><th>Nama</th><th>Satuan</th><th class="num">Stok</th><th>Aksi</th></tr></thead><tbody>
@@ -290,16 +293,38 @@ function pageItems() {
 async function saveItem(e) {
   e.preventDefault(); const id = $('#item_id').value || uid();
   const data = { item_code: $('#item_code').value, item_name: $('#item_name').value, unit: $('#item_unit').value };
-  if (!S.editing) data.stock = parseFloat($('#item_stock').value) || 0;
+  if (!S.editing) data.stock = 0; // Default 0, input via Penerimaan
   await db.ref('items/' + id).update(data); nav('items'); flash('Data Barang berhasil disimpan.');
 }
 function editItem(id) { S.editing = id; renderApp(); }
 async function delItem(id) { if(confirm('Hapus barang ini?')) { await db.ref('items/' + id).remove(); renderApp(); flash('Barang dihapus.'); } }
 
+function importItems(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  Papa.parse(file, {
+    header: true, skipEmptyLines: true,
+    complete: async function(results) {
+      let count = 0;
+      for (const row of results.data) {
+        if (row.item_code && row.item_name) {
+          await db.ref('items/' + uid()).set({ item_code: row.item_code, item_name: row.item_name, unit: row.unit||'PCS', stock: 0 });
+          count++;
+        }
+      }
+      renderApp(); flash(`Berhasil import ${count} data barang.`);
+    }
+  });
+}
+
 /* ============================================================
    7. PENERIMAAN BARANG & MUTASI STOK
    ============================================================ */
 function pageIncoming() {
+  const incomingHistory = Object.entries(S.stock_history)
+    .filter(([id, h]) => h.qty_in > 0)
+    .sort((a,b) => b[1].timestamp - a[1].timestamp);
+
   return `<div class="page-head"><div><div class="eyebrow">INVENTORY</div><h1>Penerimaan Barang (Stok Masuk)</h1></div></div>
     <section class="panel"><div class="panel-head"><h2>Input Barang Masuk</h2></div>
       <form class="form-grid" onsubmit="saveIncoming(event)">
@@ -312,6 +337,19 @@ function pageIncoming() {
         <label class="span-2">Keterangan Tambahan<input id="in_notes" placeholder="Cth: Pembelian dari Supplier A"></label>
         <div class="form-actions"><button class="btn btn-primary">Simpan Penerimaan</button></div>
       </form>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><h2>Riwayat Penerimaan Barang (Bisa Direverse)</h2></div>
+      <div class="table-wrap"><table><thead><tr><th>Tanggal</th><th>Nama Barang</th><th>Qty Masuk</th><th>No. Ref</th><th>Aksi</th></tr></thead><tbody>
+        ${incomingHistory.map(([hid, h]) => `<tr>
+          <td>${new Date(h.timestamp).toLocaleString()}</td>
+          <td>${esc(h.item_name)}</td>
+          <td class="num" style="color:var(--green)">+${h.qty_in}</td>
+          <td>${esc(h.ref_no)}</td>
+          <td><button class="btn btn-danger btn-sm" onclick="reverseIncoming('${hid}', '${h.item_id}', ${h.qty_in})">Batalkan (Reverse)</button></td>
+        </tr>`).join('') || '<tr><td colspan="5" class="empty">Belum ada riwayat penerimaan.</td></tr>'}
+      </tbody></table></div>
     </section>`;
 }
 
@@ -327,10 +365,8 @@ async function saveIncoming(e) {
   const item = S.items[itemId];
   const newStock = (item.stock || 0) + qty;
 
-  // 1. Update Master Barang
   await db.ref('items/' + itemId).update({ stock: newStock });
   
-  // 2. Catat Histori
   await db.ref('stock_history/' + uid()).set({
     item_id: itemId, item_name: item.item_name, qty_in: qty, qty_out: 0,
     balance_after: newStock, ref_no: ref, description: notes || 'Penerimaan Barang', timestamp: now(), user: S.user.name
@@ -339,6 +375,22 @@ async function saveIncoming(e) {
   flash('Stok berhasil ditambahkan.'); 
   e.target.reset();
   renderApp();
+}
+
+async function reverseIncoming(historyId, itemId, qty) {
+  if(!confirm(`Batalkan penerimaan stok sebanyak ${qty}? Stok akan dikurangi kembali.`)) return;
+  const item = S.items[itemId];
+  if(item.stock < qty) return alert('Gagal reverse: Stok saat ini lebih kecil dari qty yang mau dibatalkan (mungkin sudah terpakai).');
+
+  const newStock = item.stock - qty;
+  
+  // 1. Kembalikan Stok
+  await db.ref('items/' + itemId).update({ stock: newStock });
+  
+  // 2. Hapus Histori
+  await db.ref('stock_history/' + historyId).remove();
+  
+  flash('Penerimaan berhasil dibatalkan.'); renderApp();
 }
 
 function pageMutation() {
@@ -480,7 +532,7 @@ async function deleteUser(uid) {
 }
 
 /* ============================================================
-   9. PERMINTAAN & APPROVAL
+   9. PERMINTAAN & APPROVAL (TANDA TANGAN SPK)
    ============================================================ */
 function pageRequests() {
   const rows = Object.entries(S.requests).sort((a,b) => b[1].created_at - a[1].created_at);
@@ -616,11 +668,12 @@ async function decideApproval(logId, dec) {
 }
 
 /* ============================================================
-   10. WORK ORDER & SPK
+   10. WORK ORDER (ADMIN VIEW & REVERSE)
    ============================================================ */
 function pageWorkOrders() {
   const rows = Object.entries(S.workorders).sort((a,b) => (b[1].created_at||0) - (a[1].created_at||0));
-  const canEdit = isAdmin() || S.user.role === 'ENG_MANAGER' || S.user.role === 'WAREHOUSE';
+  const canEdit = S.user.role === 'ENG_MANAGER' || S.user.role === 'WAREHOUSE'; 
+  const isAdminView = isAdmin();
   
   return `<div class="page-head"><div><div class="eyebrow">ENGINEERING</div><h1>Work Order (SPK)</h1></div></div>
   ${rows.map(([id, wo]) => {
@@ -630,7 +683,11 @@ function pageWorkOrders() {
     return `<section class="panel">
       <div class="panel-head no-print">
         <div><h2>${esc(wo.wo_no)}</h2><p class="muted">Pemohon: ${esc(req.requester_name||'—')} | Dept: ${esc((S.departments[req.dept_id]||{}).name||'—')}</p></div>
-        <div class="action-row">${badge(wo.status)} <button class="btn btn-light btn-sm" onclick="printSPK('${id}')">🖨 Cetak SPK</button></div>
+        <div class="action-row">
+          ${badge(wo.status)} 
+          <button class="btn btn-light btn-sm" onclick="printSPK('${id}')">🖨 Cetak SPK</button>
+          ${isAdminView && wo.status !== 'OPEN' ? `<button class="btn btn-danger btn-sm" onclick="reverseWO('${id}')">Reverse ke Awal</button>` : ''}
+        </div>
       </div>
       
       <div id="print-spk-${id}" style="display:none;">
@@ -660,6 +717,7 @@ function pageWorkOrders() {
           <p><strong>Status:</strong> ${wo.status}</p>
         </div>
 
+        <!-- TANDA TANGAN DIPERBAIKI MENGGUNAKAN DATA REQUEST -->
         <div style="display:flex; justify-content:space-between; margin-top:40px; text-align:center; font-size:12px;">
           <div style="width:22%">
             <p>Pemohon</p><br><br><br>
@@ -680,6 +738,25 @@ function pageWorkOrders() {
         </div>
       </div>
 
+      <!-- TAMPILAN TABEL UNTUK ADMIN -->
+      ${isAdminView ? `
+      <div class="table-wrap" style="margin-top:15px;">
+        <table>
+          <thead><tr><th>Barang</th><th>Qty</th><th>Stok Tersedia</th><th>Status Barang</th></tr></thead>
+          <tbody>
+            ${items.map(it => {
+              const item = S.items[it.item_id] || {item_name: 'Dihapus', stock: 0};
+              return `<tr>
+                <td>${esc(item.item_name)}</td>
+                <td>${it.qty}</td>
+                <td>${item.stock}</td>
+                <td>${item.stock >= it.qty ? '<span class="badge green">Siap</span>' : '<span class="badge red">Kurang</span>'}</td>
+              </tr>`;
+            }).join('') || '<tr><td colspan="4" class="empty">Belum ada barang yang diminta.</td></tr>'}
+          </tbody>
+        </table>
+      </div>
+      ` : `
       <div class="no-print">
         <p><strong>Deskripsi:</strong> ${esc(req.description||'')}</p>
         
@@ -698,7 +775,7 @@ function pageWorkOrders() {
                   <td>
                     ${isOutOfStock ? 
                       `<button class="btn btn-warning btn-sm" onclick="requestPurchase('${id}', '${it.item_id}', ${it.qty})">Ajukan Beli</button>` : 
-                      (S.user.role === 'WAREHOUSE' || isAdmin()) ? 
+                      (S.user.role === 'WAREHOUSE') ? 
                       `<button class="btn btn-success btn-sm" onclick="issueStock('${id}', '${it.item_id}', ${it.qty})">✅ Ambil Barang</button>` : 
                       `<span class="badge gray">Menunggu Gudang</span>`
                     }
@@ -738,12 +815,25 @@ function pageWorkOrders() {
            <p><strong>Diagnosa:</strong> ${esc(wo.diagnosis||'Belum diisi')}</p>
            <p><strong>Tindakan:</strong> ${esc(wo.action_taken||'Belum diisi')}</p>
         </div>`}
-      </div>
+      </div>`}
     </section>`;
   }).join('') || '<div class="panel empty">Belum ada Work Order.</div>'}`;
 }
 
-// Fungsi untuk mencocokkan input teks dengan ID Barang
+// Fungsi Reverse WO (Hanya Admin)
+async function reverseWO(woId) {
+  if(!confirm('Apakah Anda yakin ingin me-reverse Work Order ini ke awal (OPEN)? Status pengerjaan akan di-reset.')) return;
+  
+  await db.ref('workorders/' + woId).update({ 
+    status: 'OPEN', 
+    diagnosis: '', 
+    action_taken: '', 
+    test_result: '',
+    updated_at: now()
+  });
+  flash('Work Order berhasil di-reverse ke status OPEN.'); renderApp();
+}
+
 function resolveItemId(inputEl, woId) {
   const val = inputEl.value;
   const datalist = document.getElementById('items-datalist-' + woId);
