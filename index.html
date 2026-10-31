@@ -106,7 +106,7 @@ const S = {
   user: null, users: {}, departments: {}, items: {}, assets: {},
   requests: {}, workorders: {}, purchases: {}, logs: {}, settings: {}, stock_history: {},
   page: 'dashboard', editing: null, editingIncoming: null, filterMutasi: 'ALL',
-  viewingRequest: null // Menyimpan ID request yang sedang dilihat detailnya
+  viewingRequest: null
 };
 
 const ROLES = {
@@ -136,6 +136,15 @@ function flash(msg, type='success') {
   const el = document.createElement('div'); el.className = `alert ${type}`; el.textContent = msg;
   const main = $('.content') || $('#app'); main.prepend(el);
   setTimeout(() => el.remove(), 4000);
+}
+
+// FUNGSI BARU: Mendapatkan nama approver yang sedang ditunggu
+function getPendingApproverName(reqId) {
+  const pendingLog = Object.values(S.logs).find(l => l.request_id === reqId && l.decision === 'PENDING');
+  if (pendingLog && S.users[pendingLog.approver_id]) {
+    return S.users[pendingLog.approver_id].name;
+  }
+  return null;
 }
 
 /* ============================================================
@@ -320,7 +329,7 @@ function importItems(e) {
 }
 
 /* ============================================================
-   7. PENERIMAAN BARANG
+   7. PENERIMAAN BARANG & MUTASI STOK
    ============================================================ */
 function pageIncoming() {
   const incomingHistory = Object.entries(S.stock_history)
@@ -580,12 +589,19 @@ function pageRequests() {
           spkStatus = '<span class="badge gray">Belum dibuat</span>';
         }
 
+        // TAMBAHAN: Cari nama yang sedang menunggu approval
+        let pendingName = getPendingApproverName(id);
+        let statusHtml = badge(r.status);
+        if (pendingName) {
+          statusHtml += `<br><small class="muted" style="font-size:10px;">Menunggu: <strong>${esc(pendingName)}</strong></small>`;
+        }
+
         return `<tr>
           <td><strong>${esc(r.request_no)}</strong></td>
           <td>${fmtDate(r.created_at)}</td>
           <td>${esc(r.asset||'—')}</td>
           <td>${esc(r.description)}</td>
-          <td>${badge(r.status)}</td>
+          <td>${statusHtml}</td>
           <td>${spkStatus}</td>
           <td>
             <button class="btn btn-primary btn-sm" onclick="viewDetail('${id}')">🔍 Detail</button>
@@ -609,6 +625,22 @@ function pageRequestDetail(reqId) {
   const logs = Object.values(S.logs).filter(l => l.request_id === reqId).sort((a,b) => a.created_at - b.created_at);
   const wo = Object.values(S.workorders).find(w => w.request_id === reqId);
 
+  // FUNGSI BANTU UNTUK MENAMPILKAN NAMA ASSIGNED
+  const getApproverInfo = (stage) => {
+    const log = logs.find(l => l.stage === stage);
+    if (!log) return { name: '—', status: 'gray', date: '—' };
+    const approverName = S.users[log.approver_id] ? S.users[log.approver_id].name : 'User Dihapus';
+    
+    if (log.decision === 'PENDING') return { name: approverName, status: 'amber', date: 'Menunggu' };
+    if (log.decision === 'APPROVED') return { name: approverName, status: 'green', date: fmtDate(log.decided_at) };
+    if (log.decision === 'REJECTED') return { name: approverName, status: 'red', date: 'Ditolak' };
+    return { name: approverName, status: 'gray', date: '—' };
+  };
+
+  const headInfo = getApproverInfo('HEAD_DEPT');
+  const engInfo = getApproverInfo('ENG_MANAGER');
+  const dirInfo = getApproverInfo('DIRECTOR');
+
   return `
     <div class="page-head">
       <div><div class="eyebrow">DETAIL PERMINTAAN</div><h1>${esc(r.request_no)}</h1></div>
@@ -629,30 +661,31 @@ function pageRequestDetail(reqId) {
       </section>
 
       <section class="panel">
-        <div class="panel-head"><h2>Status Persetujuan (Approval)</h2></div>
+        <div class="panel-head"><h2>Jalur Persetujuan (Approval)</h2></div>
         <table>
-          <thead><tr><th>Tahap</th><th>Nama</th><th>Status</th><th>Tanggal</th></tr></thead>
+          <thead><tr><th>Tahap</th><th>Nama Pejabat</th><th>Status</th><th>Tanggal</th></tr></thead>
           <tbody>
             <tr>
               <td>Kepala Dept</td>
-              <td>${esc(r.approver_head_name || '—')}</td>
-              <td>${r.approver_head_name ? '<span class="badge green">Approved</span>' : (r.status==='PENDING_HEAD'?'<span class="badge amber">Menunggu</span>':'—')}</td>
-              <td>${r.approver_head_date ? fmtDate(r.approver_head_date) : '—'}</td>
+              <td>${esc(headInfo.name)}</td>
+              <td>${badge(headInfo.status === 'amber' ? 'PENDING' : (headInfo.status === 'green' ? 'APPROVED' : (headInfo.status === 'red' ? 'REJECTED' : 'WAITING')))}</td>
+              <td>${headInfo.date}</td>
             </tr>
             <tr>
               <td>Kepala Engineering</td>
-              <td>${esc(r.approver_eng_name || '—')}</td>
-              <td>${r.approver_eng_name ? '<span class="badge green">Approved</span>' : (r.status==='PENDING_MANAGER'?'<span class="badge amber">Menunggu</span>':'—')}</td>
-              <td>${r.approver_eng_date ? fmtDate(r.approver_eng_date) : '—'}</td>
+              <td>${esc(engInfo.name)}</td>
+              <td>${badge(engInfo.status === 'amber' ? 'PENDING' : (engInfo.status === 'green' ? 'APPROVED' : (engInfo.status === 'red' ? 'REJECTED' : 'WAITING')))}</td>
+              <td>${engInfo.date}</td>
             </tr>
             <tr>
               <td>Direktur</td>
-              <td>${esc(r.approver_dir_name || '—')}</td>
-              <td>${r.approver_dir_name ? '<span class="badge green">Approved</span>' : (r.status==='PENDING_DIRECTOR'?'<span class="badge amber">Menunggu</span>':'—')}</td>
-              <td>${r.approver_dir_date ? fmtDate(r.approver_dir_date) : '—'}</td>
+              <td>${esc(dirInfo.name)}</td>
+              <td>${badge(dirInfo.status === 'amber' ? 'PENDING' : (dirInfo.status === 'green' ? 'APPROVED' : (dirInfo.status === 'red' ? 'REJECTED' : 'WAITING')))}</td>
+              <td>${dirInfo.date}</td>
             </tr>
           </tbody>
         </table>
+        <p class="muted" style="font-size:11px; margin-top:10px;">* Nama pejabat diisi otomatis sesuai user yang ditugaskan di sistem.</p>
       </section>
     </div>
 
