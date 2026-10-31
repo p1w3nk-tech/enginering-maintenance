@@ -402,7 +402,7 @@ function importItems(e) {
 }
 
 /* ============================================================
-   7. PENERIMAAN BARANG & MUTASI STOK
+   7. PENERIMAAN BARANG (DENGAN AUTOCOMPLETE) & MUTASI STOK
    ============================================================ */
 function pageIncoming() {
   const incomingHistory = Object.entries(S.stock_history)
@@ -413,16 +413,26 @@ function pageIncoming() {
   const editData = isEdit ? S.stock_history[S.editingIncoming] : null;
   const defaultDate = new Date().toISOString().split('T')[0];
   const editDate = editData ? new Date(editData.timestamp).toISOString().split('T')[0] : defaultDate;
+  
+  let editItemName = '';
+  if (isEdit && S.items[editData.item_id]) {
+    editItemName = S.items[editData.item_id].item_name;
+  }
 
   return `<div class="page-head"><div><div class="eyebrow">INVENTORY</div><h1>Penerimaan Barang (Stok Masuk)</h1></div></div>
     <section class="panel"><div class="panel-head"><h2>${isEdit ? 'Edit' : 'Input'} Barang Masuk</h2></div>
       <form class="form-grid" onsubmit="saveIncoming(event)">
         <input type="hidden" id="in_history_id" value="${S.editingIncoming||''}">
         <label>Tanggal Masuk<input type="date" id="in_date" required value="${editDate}"></label>
-        <label>Pilih Barang<select id="in_item" required ${isEdit ? 'disabled' : ''}>
-          <option value="">— Pilih Barang —</option>
-          ${Object.entries(S.items).map(([id,i]) => `<option value="${id}" ${isEdit && editData.item_id === id ? 'selected' : ''}>${esc(i.item_code)} — ${esc(i.item_name)} (Stok: ${i.stock||0})</option>`).join('')}
-        </select></label>
+        
+        <label>Cari & Pilih Barang
+          <input type="text" list="items-data-in" id="in_item_search" placeholder="Ketik nama barang..." required autocomplete="off" oninput="resolveIncomingItemId(this)" value="${esc(editItemName)}" ${isEdit ? 'disabled' : ''}>
+          <input type="hidden" id="in_item" value="${isEdit ? editData.item_id : ''}">
+          <datalist id="items-data-in">
+            ${Object.entries(S.items).map(([id,i]) => `<option data-id="${id}" value="${esc(i.item_name)}">Stok: ${i.stock||0} ${esc(i.unit)}</option>`).join('')}
+          </datalist>
+        </label>
+        
         <label>Qty Masuk<input type="number" id="in_qty" min="1" required value="${isEdit ? editData.qty_in : ''}"></label>
         <label>No. PO / Surat Jalan<input id="in_ref" placeholder="Cth: PO-2023-001" required value="${isEdit ? esc(editData.ref_no) : ''}"></label>
         <label class="span-2">Keterangan Tambahan<input id="in_notes" placeholder="Cth: Pembelian dari Supplier A" value="${isEdit ? esc(editData.description) : ''}"></label>
@@ -448,6 +458,22 @@ function pageIncoming() {
       </tbody></table></div>
     </section>`;
 }
+
+// Fungsi untuk mencocokkan input teks dengan ID Barang (Penerimaan)
+function resolveIncomingItemId(inputEl) {
+  const val = inputEl.value;
+  const datalist = document.getElementById('items-data-in');
+  const options = datalist.getElementsByTagName('option');
+  let foundId = '';
+  for (let i = 0; i < options.length; i++) {
+    if (options[i].value === val) {
+      foundId = options[i].getAttribute('data-id');
+      break;
+    }
+  }
+  document.getElementById('in_item').value = foundId;
+}
+
 function editIncoming(hid) { S.editingIncoming = hid; renderApp(); window.scrollTo(0, 0); }
 async function saveIncoming(e) {
   e.preventDefault();
@@ -458,7 +484,9 @@ async function saveIncoming(e) {
   const ref = $('#in_ref').value;
   const notes = $('#in_notes').value;
   
-  if(!itemId || qty <= 0) return alert('Data tidak valid.');
+  if(!itemId) return alert('Barang tidak ditemukan. Silakan pilih dari daftar yang muncul.');
+  if(qty <= 0) return alert('Qty tidak valid.');
+  
   const ts = new Date(dateStr).getTime();
   const item = S.items[itemId];
 
@@ -493,7 +521,6 @@ async function reverseIncoming(historyId, itemId, qty) {
 }
 
 function pageMutation() {
-  // Tentukan filter
   const itemId = S.filterMutasiItem || 'ALL';
   const startDate = S.filterMutasiStart ? new Date(S.filterMutasiStart).setHours(0,0,0,0) : 0;
   const endDate = S.filterMutasiEnd ? new Date(S.filterMutasiEnd).setHours(23,59,59,999) : Infinity;
@@ -555,6 +582,7 @@ function pageMutation() {
         <thead>
           <tr>
             <th>Tanggal</th>
+            <th>Nama Barang</th>
             <th>No. Ref</th>
             <th>Keterangan</th>
             <th class="num">Masuk</th>
@@ -566,13 +594,14 @@ function pageMutation() {
         <tbody>
           ${historyRows.map(h => `<tr>
             <td>${fmtDateTime(h.timestamp)}</td>
+            <td>${esc(h.item_name)}</td>
             <td>${esc(h.ref_no)}</td>
             <td>${esc(h.description)}</td>
             <td class="num" style="color:var(--green)">${h.qty_in ? '+'+h.qty_in : '—'}</td>
             <td class="num" style="color:var(--red)">${h.qty_out ? '-'+h.qty_out : '—'}</td>
             <td class="num"><strong>${h.balance_after}</strong></td>
             <td>${esc(h.user)}</td>
-          </tr>`).join('') || '<tr><td colspan="7" class="empty">Belum ada mutasi stok pada periode ini.</td></tr>'}
+          </tr>`).join('') || '<tr><td colspan="8" class="empty">Belum ada mutasi stok pada periode ini.</td></tr>'}
         </tbody>
       </table>
     </div>
