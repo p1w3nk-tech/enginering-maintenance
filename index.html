@@ -293,7 +293,7 @@ function pageItems() {
 async function saveItem(e) {
   e.preventDefault(); const id = $('#item_id').value || uid();
   const data = { item_code: $('#item_code').value, item_name: $('#item_name').value, unit: $('#item_unit').value };
-  if (!S.editing) data.stock = 0; // Default 0, input via Penerimaan
+  if (!S.editing) data.stock = 0; 
   await db.ref('items/' + id).update(data); nav('items'); flash('Data Barang berhasil disimpan.');
 }
 function editItem(id) { S.editing = id; renderApp(); }
@@ -384,10 +384,7 @@ async function reverseIncoming(historyId, itemId, qty) {
 
   const newStock = item.stock - qty;
   
-  // 1. Kembalikan Stok
   await db.ref('items/' + itemId).update({ stock: newStock });
-  
-  // 2. Hapus Histori
   await db.ref('stock_history/' + historyId).remove();
   
   flash('Penerimaan berhasil dibatalkan.'); renderApp();
@@ -425,7 +422,7 @@ function pageMutation() {
 }
 
 /* ============================================================
-   8. MANAJEMEN USER & DEPARTEMEN
+   8. MANAJEMEN USER & DEPARTEMEN (ADMIN)
    ============================================================ */
 function pageDepartments() {
   const rows = Object.entries(S.departments);
@@ -527,12 +524,12 @@ async function updateUser(e) {
 }
 async function deleteUser(uid) {
   if (uid === S.user.uid) return alert('Anda tidak bisa menghapus akun Anda sendiri.');
-  if (!confirm('Hapus pengguna ini?')) return;
-  await db.ref('users/' + uid).remove(); renderApp(); flash('Pengguna berhasil dihapus.');
+  if (!confirm('Hapus pengguna ini? Pengguna tidak akan bisa login lagi.')) return;
+  await db.ref('users/' + uid).remove(); renderApp(); flash('Pengguna berhasil dihapus (Akses dicabut).');
 }
 
 /* ============================================================
-   9. PERMINTAAN & APPROVAL (TANDA TANGAN SPK)
+   9. PERMINTAAN & APPROVAL (DELETE ADMIN)
    ============================================================ */
 function pageRequests() {
   const rows = Object.entries(S.requests).sort((a,b) => b[1].created_at - a[1].created_at);
@@ -552,15 +549,36 @@ function pageRequests() {
       </form>
     </section>` : ''}
     
-    <section class="panel"><div class="table-wrap"><table><thead><tr><th>No</th><th>Tanggal</th><th>Aset</th><th>Deskripsi</th><th>Status</th></tr></thead><tbody>
+    <section class="panel"><div class="table-wrap"><table><thead><tr><th>No</th><th>Tanggal</th><th>Aset</th><th>Deskripsi</th><th>Status</th>${isAdmin()?'<th>Aksi</th>':''}</tr></thead><tbody>
       ${rows.map(([id,r]) => `<tr>
         <td><strong>${esc(r.request_no)}</strong></td>
         <td>${fmtDate(r.created_at)}</td>
         <td>${esc(r.asset||'—')}</td>
         <td>${esc(r.description)}</td>
         <td>${badge(r.status)}</td>
-      </tr>`).join('') || '<tr><td colspan="5" class="empty">Belum ada permintaan.</td></tr>'}
+        ${isAdmin() ? `<td><button class="btn btn-danger btn-sm" onclick="deleteRequest('${id}')">Hapus</button></td>` : ''}
+      </tr>`).join('') || `<tr><td colspan="${isAdmin()?6:5}" class="empty">Belum ada permintaan.</td></tr>`}
     </tbody></table></div></section>`;
+}
+
+async function deleteRequest(reqId) {
+  if(!confirm('Hapus permintaan ini? Semua data Work Order dan riwayat Approval terkait juga akan dihapus secara permanen.')) return;
+  
+  // 1. Hapus Request
+  await db.ref('requests/' + reqId).remove();
+  
+  // 2. Hapus Approval Logs
+  Object.entries(S.logs).forEach(([logId, log]) => {
+    if(log.request_id === reqId) db.ref('approval_logs/' + logId).remove();
+  });
+  
+  // 3. Hapus Work Order terkait
+  Object.entries(S.workorders).forEach(([woId, wo]) => {
+    if(wo.request_id === reqId) db.ref('workorders/' + woId).remove();
+  });
+
+  flash('Permintaan beserta data terkait berhasil dihapus.');
+  renderApp();
 }
 
 async function saveRequest(e) {
@@ -668,7 +686,7 @@ async function decideApproval(logId, dec) {
 }
 
 /* ============================================================
-   10. WORK ORDER (ADMIN VIEW & REVERSE)
+   10. WORK ORDER (REVERSE PER TRANSAKSI)
    ============================================================ */
 function pageWorkOrders() {
   const rows = Object.entries(S.workorders).sort((a,b) => (b[1].created_at||0) - (a[1].created_at||0));
@@ -679,6 +697,10 @@ function pageWorkOrders() {
   ${rows.map(([id, wo]) => {
     const req = S.requests[wo.request_id] || {};
     const items = wo.items || [];
+    // Ambil riwayat pengeluaran barang untuk WO ini
+    const issuedHistory = Object.entries(S.stock_history)
+      .filter(([hid, h]) => h.ref_no === wo.wo_no && h.qty_out > 0)
+      .sort((a,b) => b[1].timestamp - a[1].timestamp);
     
     return `<section class="panel">
       <div class="panel-head no-print">
@@ -686,7 +708,6 @@ function pageWorkOrders() {
         <div class="action-row">
           ${badge(wo.status)} 
           <button class="btn btn-light btn-sm" onclick="printSPK('${id}')">🖨 Cetak SPK</button>
-          ${isAdminView && wo.status !== 'OPEN' ? `<button class="btn btn-danger btn-sm" onclick="reverseWO('${id}')">Reverse ke Awal</button>` : ''}
         </div>
       </div>
       
@@ -717,7 +738,6 @@ function pageWorkOrders() {
           <p><strong>Status:</strong> ${wo.status}</p>
         </div>
 
-        <!-- TANDA TANGAN DIPERBAIKI MENGGUNAKAN DATA REQUEST -->
         <div style="display:flex; justify-content:space-between; margin-top:40px; text-align:center; font-size:12px;">
           <div style="width:22%">
             <p>Pemohon</p><br><br><br>
@@ -738,10 +758,10 @@ function pageWorkOrders() {
         </div>
       </div>
 
-      <!-- TAMPILAN TABEL UNTUK ADMIN -->
       ${isAdminView ? `
       <div class="table-wrap" style="margin-top:15px;">
-        <table>
+        <h4 style="margin-bottom:10px;">Daftar Kebutuhan Barang:</h4>
+        <table style="margin-bottom:20px;">
           <thead><tr><th>Barang</th><th>Qty</th><th>Stok Tersedia</th><th>Status Barang</th></tr></thead>
           <tbody>
             ${items.map(it => {
@@ -755,13 +775,27 @@ function pageWorkOrders() {
             }).join('') || '<tr><td colspan="4" class="empty">Belum ada barang yang diminta.</td></tr>'}
           </tbody>
         </table>
+
+        <h4 style="margin-bottom:10px; margin-top:20px;">Riwayat Pengambilan Barang (Gudang):</h4>
+        <table>
+          <thead><tr><th>Tanggal</th><th>Nama Barang</th><th>Qty Keluar</th><th>Oleh</th><th>Aksi</th></tr></thead>
+          <tbody>
+            ${issuedHistory.map(([hid, h]) => `<tr>
+              <td>${new Date(h.timestamp).toLocaleString()}</td>
+              <td>${esc(h.item_name)}</td>
+              <td class="num" style="color:var(--red)">-${h.qty_out}</td>
+              <td>${esc(h.user)}</td>
+              <td><button class="btn btn-danger btn-sm" onclick="reverseWOTransaction('${hid}', '${h.item_id}', ${h.qty_out}, '${id}')">Reverse</button></td>
+            </tr>`).join('') || '<tr><td colspan="5" class="empty">Belum ada barang yang diambil gudang.</td></tr>'}
+          </tbody>
+        </table>
       </div>
       ` : `
       <div class="no-print">
         <p><strong>Deskripsi:</strong> ${esc(req.description||'')}</p>
         
         <div style="margin-top:15px; background:#f8fafc; padding:15px; border-radius:8px; border:1px solid #e5e9f0;">
-          <h4 style="font-size:13px; margin-bottom:10px;">Daftar Barang yang Dibutuhkan (Diisi oleh Eng/Gudang):</h4>
+          <h4 style="font-size:13px; margin-bottom:10px;">Daftar Barang yang Dibutuhkan:</h4>
           <table class="table" style="width:100%; font-size:12px;">
             <thead><tr><th>Nama Barang</th><th>Qty</th><th>Stok Tersedia</th><th>Aksi</th></tr></thead>
             <tbody>
@@ -820,18 +854,40 @@ function pageWorkOrders() {
   }).join('') || '<div class="panel empty">Belum ada Work Order.</div>'}`;
 }
 
-// Fungsi Reverse WO (Hanya Admin)
-async function reverseWO(woId) {
-  if(!confirm('Apakah Anda yakin ingin me-reverse Work Order ini ke awal (OPEN)? Status pengerjaan akan di-reset.')) return;
-  
-  await db.ref('workorders/' + woId).update({ 
-    status: 'OPEN', 
-    diagnosis: '', 
-    action_taken: '', 
-    test_result: '',
-    updated_at: now()
+// REVERSE TRANSAKSI PENGELUARAN BARANG DI WO
+async function reverseWOTransaction(historyId, itemId, qty, woId) {
+  if(!confirm(`Batalkan pengeluaran barang sebanyak ${qty}? Stok akan dikembalikan dan barang masuk ke daftar kebutuhan WO.`)) return;
+  const historyItem = S.stock_history[historyId];
+  const item = S.items[itemId];
+  if(!historyItem || !item) return alert('Data tidak ditemukan.');
+
+  const newStock = item.stock + qty;
+
+  // 1. Kembalikan Stok ke Master Barang
+  await db.ref('items/' + itemId).update({ stock: newStock });
+
+  // 2. Catat log Reverse (sebagai stok masuk karena pembatalan)
+  await db.ref('stock_history/' + uid()).set({
+    item_id: itemId, item_name: item.item_name, qty_in: qty, qty_out: 0,
+    balance_after: newStock, ref_no: 'REV-'+historyItem.ref_no, description: `Reverse pengeluaran: ${historyItem.ref_no}`, timestamp: now(), user: S.user.name
   });
-  flash('Work Order berhasil di-reverse ke status OPEN.'); renderApp();
+
+  // 3. Hapus riwayat pengeluaran asli
+  await db.ref('stock_history/' + historyId).remove();
+
+  // 4. Masukkan kembali barang ke daftar kebutuhan WO
+  const wo = S.workorders[woId];
+  const items = wo.items || [];
+  const existing = items.find(it => it.item_id === itemId);
+  if(existing) {
+    existing.qty += qty;
+  } else {
+    items.push({ item_id: itemId, qty: qty });
+  }
+
+  await db.ref('workorders/' + woId).update({ items });
+  flash('Transaksi berhasil direverse. Stok dikembalikan & masuk daftar WO.');
+  renderApp();
 }
 
 function resolveItemId(inputEl, woId) {
