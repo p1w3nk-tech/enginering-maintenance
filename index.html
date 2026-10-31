@@ -105,7 +105,8 @@ const FAKE_EMAIL_DOMAIN = "@app.local";
 const S = {
   user: null, users: {}, departments: {}, items: {}, assets: {},
   requests: {}, workorders: {}, purchases: {}, logs: {}, settings: {}, stock_history: {},
-  page: 'dashboard', editing: null, editingIncoming: null, filterMutasi: 'ALL'
+  page: 'dashboard', editing: null, editingIncoming: null, filterMutasi: 'ALL',
+  viewingRequest: null // Menyimpan ID request yang sedang dilihat detailnya
 };
 
 const ROLES = {
@@ -211,7 +212,7 @@ function renderApp() {
     </div>`;
   renderPage();
 }
-function nav(p) { S.page = p; S.editing = null; S.editingIncoming = null; renderApp(); }
+function nav(p) { S.page = p; S.editing = null; S.editingIncoming = null; S.viewingRequest = null; renderApp(); }
 
 function renderPage() {
   const c = $('#content');
@@ -231,7 +232,7 @@ function renderPage() {
   else if (S.page === 'incoming') c.innerHTML = pageIncoming();
   else if (S.page === 'mutation') c.innerHTML = pageMutation();
   else if (S.page === 'assets') c.innerHTML = pageAssets();
-  else if (S.page === 'requests') c.innerHTML = pageRequests();
+  else if (S.page === 'requests') c.innerHTML = S.viewingRequest ? pageRequestDetail(S.viewingRequest) : pageRequests();
   else if (S.page === 'approvals') c.innerHTML = pageApprovals();
   else if (S.page === 'workorders') c.innerHTML = pageWorkOrders();
   else if (S.page === 'purchases') c.innerHTML = pagePurchases();
@@ -319,7 +320,7 @@ function importItems(e) {
 }
 
 /* ============================================================
-   7. PENERIMAAN BARANG (DENGAN TANGGAL & EDIT)
+   7. PENERIMAAN BARANG
    ============================================================ */
 function pageIncoming() {
   const incomingHistory = Object.entries(S.stock_history)
@@ -328,8 +329,6 @@ function pageIncoming() {
 
   const isEdit = S.editingIncoming !== null;
   const editData = isEdit ? S.stock_history[S.editingIncoming] : null;
-  
-  // Default date to today (YYYY-MM-DD)
   const defaultDate = new Date().toISOString().split('T')[0];
   const editDate = editData ? new Date(editData.timestamp).toISOString().split('T')[0] : defaultDate;
 
@@ -337,25 +336,20 @@ function pageIncoming() {
     <section class="panel"><div class="panel-head"><h2>${isEdit ? 'Edit' : 'Input'} Barang Masuk</h2></div>
       <form class="form-grid" onsubmit="saveIncoming(event)">
         <input type="hidden" id="in_history_id" value="${S.editingIncoming||''}">
-        
         <label>Tanggal Masuk<input type="date" id="in_date" required value="${editDate}"></label>
         <label>Pilih Barang<select id="in_item" required ${isEdit ? 'disabled' : ''}>
           <option value="">— Pilih Barang —</option>
           ${Object.entries(S.items).map(([id,i]) => `<option value="${id}" ${isEdit && editData.item_id === id ? 'selected' : ''}>${esc(i.item_code)} — ${esc(i.item_name)} (Stok: ${i.stock||0})</option>`).join('')}
         </select></label>
-        
         <label>Qty Masuk<input type="number" id="in_qty" min="1" required value="${isEdit ? editData.qty_in : ''}"></label>
         <label>No. PO / Surat Jalan<input id="in_ref" placeholder="Cth: PO-2023-001" required value="${isEdit ? esc(editData.ref_no) : ''}"></label>
-        
         <label class="span-2">Keterangan Tambahan<input id="in_notes" placeholder="Cth: Pembelian dari Supplier A" value="${isEdit ? esc(editData.description) : ''}"></label>
-        
         <div class="form-actions">
           ${isEdit ? '<button type="button" class="btn btn-light" onclick="S.editingIncoming=null; renderApp()">Batal</button>' : ''}
           <button class="btn btn-primary">${isEdit ? 'Update Penerimaan' : 'Simpan Penerimaan'}</button>
         </div>
       </form>
     </section>
-
     <section class="panel">
       <div class="panel-head"><h2>Riwayat Penerimaan Barang</h2></div>
       <div class="table-wrap"><table><thead><tr><th>Tanggal</th><th>Nama Barang</th><th>Qty Masuk</th><th>No. Ref</th><th>Aksi</th></tr></thead><tbody>
@@ -372,13 +366,7 @@ function pageIncoming() {
       </tbody></table></div>
     </section>`;
 }
-
-function editIncoming(hid) {
-  S.editingIncoming = hid;
-  renderApp();
-  window.scrollTo(0, 0);
-}
-
+function editIncoming(hid) { S.editingIncoming = hid; renderApp(); window.scrollTo(0, 0); }
 async function saveIncoming(e) {
   e.preventDefault();
   const hid = $('#in_history_id').value;
@@ -389,34 +377,20 @@ async function saveIncoming(e) {
   const notes = $('#in_notes').value;
   
   if(!itemId || qty <= 0) return alert('Data tidak valid.');
-  
-  // Konversi tanggal ke timestamp (jam dianggap 00:00 pagi)
   const ts = new Date(dateStr).getTime();
   const item = S.items[itemId];
 
   if (hid) {
-    // LOGIKA EDIT
     const oldH = S.stock_history[hid];
     const diff = qty - oldH.qty_in;
     const newStock = (item.stock || 0) + diff;
-
-    if (newStock < 0) return alert('Gagal update: Stok akan menjadi minus karena qty baru lebih kecil dari yang sudah terpakai.');
-
+    if (newStock < 0) return alert('Gagal update: Stok akan minus.');
     await db.ref('items/' + itemId).update({ stock: newStock });
-    await db.ref('stock_history/' + hid).update({
-      qty_in: qty,
-      balance_after: newStock,
-      ref_no: ref,
-      description: notes || 'Penerimaan Barang',
-      timestamp: ts
-    });
+    await db.ref('stock_history/' + hid).update({ qty_in: qty, balance_after: newStock, ref_no: ref, description: notes || 'Penerimaan Barang', timestamp: ts });
     flash('Penerimaan barang berhasil diperbarui.');
     S.editingIncoming = null;
-
   } else {
-    // LOGIKA SIMPAN BARU
     const newStock = (item.stock || 0) + qty;
-
     await db.ref('items/' + itemId).update({ stock: newStock });
     await db.ref('stock_history/' + uid()).set({
       item_id: itemId, item_name: item.item_name, qty_in: qty, qty_out: 0,
@@ -424,20 +398,15 @@ async function saveIncoming(e) {
     });
     flash('Stok berhasil ditambahkan.');
   }
-  
   renderApp();
 }
-
 async function reverseIncoming(historyId, itemId, qty) {
-  if(!confirm(`Batalkan penerimaan stok sebanyak ${qty}? Stok akan dikurangi kembali.`)) return;
+  if(!confirm(`Batalkan penerimaan stok sebanyak ${qty}?`)) return;
   const item = S.items[itemId];
-  if(item.stock < qty) return alert('Gagal reverse: Stok saat ini lebih kecil dari qty yang mau dibatalkan (mungkin sudah terpakai).');
-
+  if(item.stock < qty) return alert('Gagal reverse: Stok saat ini lebih kecil.');
   const newStock = item.stock - qty;
-  
   await db.ref('items/' + itemId).update({ stock: newStock });
   await db.ref('stock_history/' + historyId).remove();
-  
   flash('Penerimaan berhasil dibatalkan.'); renderApp();
 }
 
@@ -447,7 +416,6 @@ function pageMutation() {
     .sort((a,b) => b.timestamp - a.timestamp);
 
   return `<div class="page-head"><div><div class="eyebrow">REPORT</div><h1>Mutasi Stok Barang</h1></div></div>
-  
   <section class="panel">
     <div class="panel-head">
       <h2>Filter Mutasi</h2>
@@ -456,7 +424,6 @@ function pageMutation() {
         ${Object.entries(S.items).map(([id,i]) => `<option value="${id}" ${S.filterMutasi===id?'selected':''}>${esc(i.item_name)}</option>`).join('')}
       </select>
     </div>
-    
     <div class="table-wrap"><table><thead><tr><th>Tanggal</th><th>Nama Barang</th><th>No. Ref</th><th>Keterangan</th><th class="num">Masuk</th><th class="num">Keluar</th><th class="num">Sisa Saldo</th><th>Oleh</th></tr></thead><tbody>
       ${historyRows.map(h => `<tr>
         <td>${fmtDateTime(h.timestamp)}</td>
@@ -473,7 +440,7 @@ function pageMutation() {
 }
 
 /* ============================================================
-   8. MANAJEMEN USER & DEPARTEMEN (ADMIN)
+   8. MANAJEMEN USER & DEPARTEMEN
    ============================================================ */
 function pageDepartments() {
   const rows = Object.entries(S.departments);
@@ -580,7 +547,7 @@ async function deleteUser(uid) {
 }
 
 /* ============================================================
-   9. PERMINTAAN & APPROVAL
+   9. PERMINTAAN & DETAIL TRACKING
    ============================================================ */
 function pageRequests() {
   const rows = Object.entries(S.requests).sort((a,b) => b[1].created_at - a[1].created_at);
@@ -600,31 +567,122 @@ function pageRequests() {
       </form>
     </section>` : ''}
     
-    <section class="panel"><div class="table-wrap"><table><thead><tr><th>No</th><th>Tanggal</th><th>Aset</th><th>Deskripsi</th><th>Status</th>${isAdmin()?'<th>Aksi</th>':''}</tr></thead><tbody>
-      ${rows.map(([id,r]) => `<tr>
-        <td><strong>${esc(r.request_no)}</strong></td>
-        <td>${fmtDate(r.created_at)}</td>
-        <td>${esc(r.asset||'—')}</td>
-        <td>${esc(r.description)}</td>
-        <td>${badge(r.status)}</td>
-        ${isAdmin() ? `<td><button class="btn btn-danger btn-sm" onclick="deleteRequest('${id}')">Hapus</button></td>` : ''}
-      </tr>`).join('') || `<tr><td colspan="${isAdmin()?6:5}" class="empty">Belum ada permintaan.</td></tr>`}
+    <section class="panel"><div class="table-wrap"><table><thead><tr><th>No</th><th>Tanggal</th><th>Aset</th><th>Deskripsi</th><th>Status Permintaan</th><th>Progres SPK</th><th>Aksi</th></tr></thead><tbody>
+      ${rows.map(([id,r]) => {
+        // Cari WO terkait
+        const wo = Object.values(S.workorders).find(w => w.request_id === id);
+        let spkStatus = '-';
+        if (wo) {
+          if (wo.status === 'COMPLETED') spkStatus = '<span class="badge green">Selesai</span>';
+          else if (wo.status === 'IN_PROGRESS') spkStatus = '<span class="badge blue">Dikerjakan</span>';
+          else spkStatus = '<span class="badge amber">Antrean (OPEN)</span>';
+        } else if (r.status === 'APPROVED') {
+          spkStatus = '<span class="badge gray">Belum dibuat</span>';
+        }
+
+        return `<tr>
+          <td><strong>${esc(r.request_no)}</strong></td>
+          <td>${fmtDate(r.created_at)}</td>
+          <td>${esc(r.asset||'—')}</td>
+          <td>${esc(r.description)}</td>
+          <td>${badge(r.status)}</td>
+          <td>${spkStatus}</td>
+          <td>
+            <button class="btn btn-primary btn-sm" onclick="viewDetail('${id}')">🔍 Detail</button>
+            ${isAdmin() ? `<button class="btn btn-danger btn-sm" onclick="deleteRequest('${id}')">Hapus</button>` : ''}
+          </td>
+        </tr>`;
+      }).join('') || `<tr><td colspan="7" class="empty">Belum ada permintaan.</td></tr>`}
     </tbody></table></div></section>`;
+}
+
+function viewDetail(reqId) {
+  S.viewingRequest = reqId;
+  renderApp();
+  window.scrollTo(0, 0);
+}
+
+function pageRequestDetail(reqId) {
+  const r = S.requests[reqId];
+  if (!r) return `<div class="panel empty">Data tidak ditemukan.</div>`;
+  
+  const logs = Object.values(S.logs).filter(l => l.request_id === reqId).sort((a,b) => a.created_at - b.created_at);
+  const wo = Object.values(S.workorders).find(w => w.request_id === reqId);
+
+  return `
+    <div class="page-head">
+      <div><div class="eyebrow">DETAIL PERMINTAAN</div><h1>${esc(r.request_no)}</h1></div>
+      <button class="btn btn-light" onclick="S.viewingRequest=null; renderApp()">← Kembali</button>
+    </div>
+
+    <div class="grid-two">
+      <section class="panel">
+        <div class="panel-head"><h2>Informasi Permintaan</h2></div>
+        <table style="border:none;">
+          <tr><td style="border:none; width:30%;">Pemohon</td><td style="border:none;"><strong>${esc(r.requester_name)}</strong></td></tr>
+          <tr><td style="border:none;">Departemen</td><td style="border:none;">${esc((S.departments[r.dept_id]||{}).name||'—')}</td></tr>
+          <tr><td style="border:none;">Aset</td><td style="border:none;">${esc(r.asset||'—')}</td></tr>
+          <tr><td style="border:none;">Tanggal</td><td style="border:none;">${fmtDate(r.created_at)}</td></tr>
+          <tr><td style="border:none;">Status</td><td style="border:none;">${badge(r.status)}</td></tr>
+          <tr><td style="border:none;">Deskripsi</td><td style="border:none;">${esc(r.description)}</td></tr>
+        </table>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><h2>Status Persetujuan (Approval)</h2></div>
+        <table>
+          <thead><tr><th>Tahap</th><th>Nama</th><th>Status</th><th>Tanggal</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>Kepala Dept</td>
+              <td>${esc(r.approver_head_name || '—')}</td>
+              <td>${r.approver_head_name ? '<span class="badge green">Approved</span>' : (r.status==='PENDING_HEAD'?'<span class="badge amber">Menunggu</span>':'—')}</td>
+              <td>${r.approver_head_date ? fmtDate(r.approver_head_date) : '—'}</td>
+            </tr>
+            <tr>
+              <td>Kepala Engineering</td>
+              <td>${esc(r.approver_eng_name || '—')}</td>
+              <td>${r.approver_eng_name ? '<span class="badge green">Approved</span>' : (r.status==='PENDING_MANAGER'?'<span class="badge amber">Menunggu</span>':'—')}</td>
+              <td>${r.approver_eng_date ? fmtDate(r.approver_eng_date) : '—'}</td>
+            </tr>
+            <tr>
+              <td>Direktur</td>
+              <td>${esc(r.approver_dir_name || '—')}</td>
+              <td>${r.approver_dir_name ? '<span class="badge green">Approved</span>' : (r.status==='PENDING_DIRECTOR'?'<span class="badge amber">Menunggu</span>':'—')}</td>
+              <td>${r.approver_dir_date ? fmtDate(r.approver_dir_date) : '—'}</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
+    </div>
+
+    ${wo ? `
+    <section class="panel" style="background:#f0fdf4; border-color:#bbf7d0;">
+      <div class="panel-head">
+        <div><h2>Progres Pengerjaan (SPK)</h2><p class="muted" style="font-size:12px">No. SPK: <strong>${esc(wo.wo_no)}</strong></p></div>
+        <div>${badge(wo.status)}</div>
+      </div>
+      <table style="margin-bottom:15px;">
+        <tr><td style="border:none; width:20%;">Diagnosa</td><td style="border:none;">: ${esc(wo.diagnosis||'Belum ada diagnosa')}</td></tr>
+        <tr><td style="border:none;">Tindakan</td><td style="border:none;">: ${esc(wo.action_taken||'Belum ada tindakan')}</td></tr>
+        <tr><td style="border:none;">Hasil Tes</td><td style="border:none;">: ${esc(wo.test_result||'Belum ada hasil tes')}</td></tr>
+      </table>
+      <button class="btn btn-primary" onclick="printSPK('${Object.keys(S.workorders).find(k => S.workorders[k] === wo)}')">🖨 Cetak SPK</button>
+    </section>
+    ` : `
+    <section class="panel empty">
+      <p>Work Order (SPK) belum diterbitkan.</p>
+      <p class="muted" style="font-size:12px; margin-top:5px;">Work Order akan dibuat otomatis setelah disetujui oleh Direktur.</p>
+    </section>
+    `}
+  `;
 }
 
 async function deleteRequest(reqId) {
   if(!confirm('Hapus permintaan ini? Semua data Work Order dan riwayat Approval terkait juga akan dihapus secara permanen.')) return;
-  
   await db.ref('requests/' + reqId).remove();
-  
-  Object.entries(S.logs).forEach(([logId, log]) => {
-    if(log.request_id === reqId) db.ref('approval_logs/' + logId).remove();
-  });
-  
-  Object.entries(S.workorders).forEach(([woId, wo]) => {
-    if(wo.request_id === reqId) db.ref('workorders/' + woId).remove();
-  });
-
+  Object.entries(S.logs).forEach(([logId, log]) => { if(log.request_id === reqId) db.ref('approval_logs/' + logId).remove(); });
+  Object.entries(S.workorders).forEach(([woId, wo]) => { if(wo.request_id === reqId) db.ref('workorders/' + woId).remove(); });
   flash('Permintaan beserta data terkait berhasil dihapus.');
   renderApp();
 }
@@ -690,7 +748,6 @@ function pageApprovals() {
 async function decideApproval(logId, dec) {
   const log = S.logs[logId];
   const req = S.requests[log.request_id];
-  
   await db.ref('approval_logs/' + logId).update({ decision: dec, decided_at: now() });
   
   if (dec === 'REJECTED') {
@@ -719,22 +776,15 @@ async function decideApproval(logId, dec) {
     updateData.status = 'APPROVED';
     const existingWO = Object.values(S.workorders).find(w => w.request_id === log.request_id);
     if(!existingWO) {
-      await db.ref('workorders/' + uid()).set({ 
-        wo_no: 'WO-'+Date.now().toString().slice(-6), 
-        request_id: log.request_id, 
-        items: [], 
-        status: 'OPEN', 
-        created_at: now() 
-      });
+      await db.ref('workorders/' + uid()).set({ wo_no: 'WO-'+Date.now().toString().slice(-6), request_id: log.request_id, items: [], status: 'OPEN', created_at: now() });
     }
   }
-
   await db.ref('requests/' + log.request_id).update(updateData);
   flash('Keputusan disimpan.'); renderApp();
 }
 
 /* ============================================================
-   10. WORK ORDER
+   10. WORK ORDER & SPK
    ============================================================ */
 function pageWorkOrders() {
   const rows = Object.entries(S.workorders).sort((a,b) => (b[1].created_at||0) - (a[1].created_at||0));
