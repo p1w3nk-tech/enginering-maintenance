@@ -69,6 +69,7 @@ tbody tr:hover{background:#f8fafc}.num{text-align:right}
   .topbar, .sidebar, .btn, .no-print { display: none !important; } 
   .content { padding: 0; } .layout { display: block; } 
   .panel { border: none; box-shadow: none; padding: 0; } 
+  .print-only-header { display: block !important; }
 }
 </style>
 </head>
@@ -105,7 +106,8 @@ const FAKE_EMAIL_DOMAIN = "@app.local";
 const S = {
   user: null, users: {}, departments: {}, items: {}, assets: {},
   requests: {}, workorders: {}, purchases: {}, logs: {}, settings: {}, stock_history: {},
-  page: 'dashboard', editing: null, editingIncoming: null, filterMutasi: 'ALL',
+  page: 'dashboard', editing: null, editingIncoming: null, 
+  filterMutasiItem: 'ALL', filterMutasiStart: '', filterMutasiEnd: '',
   viewingRequest: null
 };
 
@@ -146,7 +148,25 @@ function getPendingApproverName(reqId) {
   return null;
 }
 
-// Helper untuk membuat HTML Cetak SPK agar tidak duplikat kode
+// UTILITY EXPORT & PRINT
+function printTable(tableId, title) {
+  const content = document.getElementById(tableId).outerHTML;
+  const win = window.open('', '_blank');
+  win.document.write(`<html><head><title>${title}</title>
+    <style>body{font-family:Arial,sans-serif; padding:20px;} table{width:100%;border-collapse:collapse; margin-top:20px;} th,td{border:1px solid #ccc;padding:8px;text-align:left}th{background:#f4f4f4} .num{text-align:right}</style>
+    </head><body><h2>${title}</h2>${content}<script>window.onload=()=>window.print()<\/script></body></html>`);
+  win.document.close();
+}
+function exportExcel(tableId, filename) {
+  const table = document.getElementById(tableId);
+  const wb = XLSX.utils.table_to_book(table, {sheet:"Mutasi"});
+  XLSX.writeFile(wb, filename + ".xlsx");
+}
+function exportPDF(elementId, filename) {
+  const element = document.getElementById(elementId);
+  html2pdf().from(element).set({ margin: 10, filename: filename + '.pdf', image: { type: 'jpeg', quality: 0.98 }, htmlcanvas: { scale: 2 }, jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' } }).save();
+}
+
 function getPrintSpkHtml(id, wo, req) {
   const items = wo.items || [];
   const issuedItems = wo.issued_items || [];
@@ -473,31 +493,89 @@ async function reverseIncoming(historyId, itemId, qty) {
 }
 
 function pageMutation() {
+  // Tentukan filter
+  const itemId = S.filterMutasiItem || 'ALL';
+  const startDate = S.filterMutasiStart ? new Date(S.filterMutasiStart).setHours(0,0,0,0) : 0;
+  const endDate = S.filterMutasiEnd ? new Date(S.filterMutasiEnd).setHours(23,59,59,999) : Infinity;
+
+  let titleName = 'Semua Barang';
+  if (itemId !== 'ALL' && S.items[itemId]) {
+    titleName = `${S.items[itemId].item_code} — ${S.items[itemId].item_name}`;
+  }
+
   const historyRows = Object.values(S.stock_history)
-    .filter(h => S.filterMutasi === 'ALL' || h.item_id === S.filterMutasi)
+    .filter(h => {
+      const matchItem = itemId === 'ALL' || h.item_id === itemId;
+      const matchDate = h.timestamp >= startDate && h.timestamp <= endDate;
+      return matchItem && matchDate;
+    })
     .sort((a,b) => b.timestamp - a.timestamp);
 
-  return `<div class="page-head"><div><div class="eyebrow">REPORT</div><h1>Mutasi Stok Barang</h1></div></div>
-  <section class="panel">
-    <div class="panel-head">
-      <h2>Filter Mutasi</h2>
-      <select onchange="S.filterMutasi = this.value; renderApp()" style="max-width:300px;">
-        <option value="ALL">— Semua Barang —</option>
-        ${Object.entries(S.items).map(([id,i]) => `<option value="${id}" ${S.filterMutasi===id?'selected':''}>${esc(i.item_name)}</option>`).join('')}
-      </select>
+  return `<div class="page-head">
+    <div>
+      <div class="eyebrow">REPORT MUTASI STOK</div>
+      <h1>${esc(titleName)}</h1>
     </div>
-    <div class="table-wrap"><table><thead><tr><th>Tanggal</th><th>Nama Barang</th><th>No. Ref</th><th>Keterangan</th><th class="num">Masuk</th><th class="num">Keluar</th><th class="num">Sisa Saldo</th><th>Oleh</th></tr></thead><tbody>
-      ${historyRows.map(h => `<tr>
-        <td>${fmtDateTime(h.timestamp)}</td>
-        <td><strong>${esc(h.item_name)}</strong></td>
-        <td>${esc(h.ref_no)}</td>
-        <td>${esc(h.description)}</td>
-        <td class="num" style="color:var(--green)">${h.qty_in ? '+'+h.qty_in : '—'}</td>
-        <td class="num" style="color:var(--red)">${h.qty_out ? '-'+h.qty_out : '—'}</td>
-        <td class="num"><strong>${h.balance_after}</strong></td>
-        <td>${esc(h.user)}</td>
-      </tr>`).join('') || '<tr><td colspan="8" class="empty">Belum ada mutasi stok.</td></tr>'}
-    </tbody></table></div>
+    <div class="action-row no-print">
+      <button class="btn btn-light" onclick="exportExcel('tbl-mutasi', 'Mutasi_Stok')">📊 Excel</button>
+      <button class="btn btn-light" onclick="exportPDF('wrapper-mutasi', 'Mutasi_Stok')">📄 PDF</button>
+      <button class="btn btn-light" onclick="printTable('tbl-mutasi', 'Mutasi Stok - ${esc(titleName)}')">🖨 Print</button>
+    </div>
+  </div>
+
+  <section class="panel no-print">
+    <div class="panel-head"><h2>Filter Pencarian</h2></div>
+    <div class="form-grid">
+      <label>Pilih Barang
+        <select onchange="S.filterMutasiItem = this.value; renderApp()">
+          <option value="ALL">— Semua Barang —</option>
+          ${Object.entries(S.items).map(([id,i]) => `<option value="${id}" ${itemId===id?'selected':''}>${esc(i.item_name)}</option>`).join('')}
+        </select>
+      </label>
+      <div style="display:flex; gap:10px;">
+        <label style="flex:1;">Dari Tanggal
+          <input type="date" value="${S.filterMutasiStart||''}" onchange="S.filterMutasiStart = this.value; renderApp()">
+        </label>
+        <label style="flex:1;">Sampai Tanggal
+          <input type="date" value="${S.filterMutasiEnd||''}" onchange="S.filterMutasiEnd = this.value; renderApp()">
+        </label>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" id="wrapper-mutasi">
+    <div class="print-only-header" style="text-align:center; margin-bottom:20px; display:none;">
+      <h2>LAPORAN MUTASI STOK</h2>
+      <h3>${esc(titleName)}</h3>
+      <p>Periode: ${S.filterMutasiStart ? fmtDate(new Date(S.filterMutasiStart).getTime()) : 'Awal'} s/d ${S.filterMutasiEnd ? fmtDate(new Date(S.filterMutasiEnd).getTime()) : 'Sekarang'}</p>
+    </div>
+    
+    <div class="table-wrap">
+      <table id="tbl-mutasi">
+        <thead>
+          <tr>
+            <th>Tanggal</th>
+            <th>No. Ref</th>
+            <th>Keterangan</th>
+            <th class="num">Masuk</th>
+            <th class="num">Keluar</th>
+            <th class="num">Sisa Saldo</th>
+            <th>Oleh</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${historyRows.map(h => `<tr>
+            <td>${fmtDateTime(h.timestamp)}</td>
+            <td>${esc(h.ref_no)}</td>
+            <td>${esc(h.description)}</td>
+            <td class="num" style="color:var(--green)">${h.qty_in ? '+'+h.qty_in : '—'}</td>
+            <td class="num" style="color:var(--red)">${h.qty_out ? '-'+h.qty_out : '—'}</td>
+            <td class="num"><strong>${h.balance_after}</strong></td>
+            <td>${esc(h.user)}</td>
+          </tr>`).join('') || '<tr><td colspan="7" class="empty">Belum ada mutasi stok pada periode ini.</td></tr>'}
+        </tbody>
+      </table>
+    </div>
   </section>`;
 }
 
@@ -1192,7 +1270,6 @@ async function decideApproval(logId, dec) {
    11. WORK ORDER & SPK
    ============================================================ */
 function pageWorkOrders() {
-  // Pisahkan antara yang belum selesai dan yang sudah COMPLETED
   const allRows = Object.entries(S.workorders).sort((a,b) => (b[1].created_at||0) - (a[1].created_at||0));
   const activeRows = allRows.filter(([id, wo]) => wo.status !== 'COMPLETED');
   const completedRows = allRows.filter(([id, wo]) => wo.status === 'COMPLETED');
@@ -1200,7 +1277,6 @@ function pageWorkOrders() {
   const canEdit = S.user.role === 'ENG_MANAGER' || isAdmin(); 
   const isAdminView = isAdmin();
 
-  // Render Active Work Orders
   let activeHtml = activeRows.map(([id, wo]) => {
     const req = S.requests[wo.request_id] || {};
     const items = wo.items || [];
@@ -1317,7 +1393,6 @@ function pageWorkOrders() {
     </section>`;
   }).join('') || '<div class="panel empty">Tidak ada Work Order yang aktif.</div>';
 
-  // Render Completed Work Orders (Tabel Riwayat)
   let completedHtml = `
     <section class="panel" style="margin-top: 30px; border-color: #d0d5dd;">
       <div class="panel-head">
@@ -1441,11 +1516,10 @@ async function saveWO(e, id) {
   const wo = S.workorders[id];
   const updateData = { status, diagnosis: $('#wo_diag_'+id).value, action_taken: $('#wo_act_'+id).value, test_result: $('#wo_test_'+id).value, updated_at: now() };
 
-  // Jika status COMPLETED, catat tanggal selesainya
   if (status === 'COMPLETED') {
     updateData.completed_at = now();
   } else {
-    updateData.completed_at = null; // Reset jika diubah kembali
+    updateData.completed_at = null;
   }
 
   await db.ref('workorders/' + id).update(updateData);
@@ -1453,7 +1527,7 @@ async function saveWO(e, id) {
   if (status === 'COMPLETED') {
     await db.ref('requests/' + wo.request_id).update({status:'COMPLETED'});
   } else {
-    await db.ref('requests/' + wo.request_id).update({status:'IN_PROGRESS'}); // Kembalikan jika di-reverse
+    await db.ref('requests/' + wo.request_id).update({status:'IN_PROGRESS'});
   }
 
   flash('Progres Work Order diperbarui.'); renderApp();
