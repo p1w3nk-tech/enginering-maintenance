@@ -450,33 +450,8 @@ function pageMutation() {
 }
 
 /* ============================================================
-   8. MANAJEMEN USER & DEPARTEMEN
+   8. MANAJEMEN USER (DENGAN RESET PASSWORD)
    ============================================================ */
-function pageDepartments() {
-  const rows = Object.entries(S.departments);
-  const isEdit = S.page === 'departments' && S.editing;
-  const d = isEdit ? S.departments[S.editing] : {code:'', name:''};
-  return `<div class="page-head"><div><div class="eyebrow">MASTER DATA</div><h1>Master Departemen</h1></div></div>
-    <section class="panel"><div class="panel-head"><h2>${isEdit ? 'Edit' : 'Tambah'} Departemen</h2></div>
-      <form class="form-grid" onsubmit="saveDept(event)">
-        <input type="hidden" id="dept_id" value="${S.editing||''}">
-        <label>Kode<input id="dept_code" required value="${esc(d.code)}"></label>
-        <label>Nama Departemen<input id="dept_name" required value="${esc(d.name)}"></label>
-        <div class="form-actions">${isEdit ? '<button type="button" class="btn btn-light" onclick="nav(\'departments\')">Batal</button>' : ''}<button class="btn btn-primary">${isEdit ? 'Update Departemen' : 'Simpan Departemen'}</button></div>
-      </form>
-    </section>
-    <section class="panel"><div class="table-wrap"><table><thead><tr><th>Kode</th><th>Nama</th><th>Aksi</th></tr></thead><tbody>
-      ${rows.map(([id,dept]) => `<tr><td><strong>${esc(dept.code)}</strong></td><td>${esc(dept.name)}</td><td><button class="btn btn-light btn-sm" onclick="editDept('${id}')">Edit</button><button class="btn btn-danger btn-sm" onclick="delDept('${id}')">Hapus</button></td></tr>`).join('') || '<tr><td colspan="3" class="empty">Kosong.</td></tr>'}
-    </tbody></table></div></section>`;
-}
-async function saveDept(e) {
-  e.preventDefault(); const id = $('#dept_id').value || uid();
-  await db.ref('departments/' + id).update({ code: $('#dept_code').value.toUpperCase(), name: $('#dept_name').value });
-  nav('departments'); flash('Data Departemen berhasil disimpan.');
-}
-function editDept(id) { S.editing = id; renderApp(); }
-async function delDept(id) { if(confirm('Hapus departemen ini?')) { await db.ref('departments/' + id).remove(); renderApp(); flash('Departemen dihapus.'); } }
-
 function pageUsers() {
   const rows = Object.entries(S.users);
   return `<div class="page-head"><div><div class="eyebrow">ADMIN</div><h1>Pengguna</h1></div></div>
@@ -485,7 +460,7 @@ function pageUsers() {
       <form class="form-grid" onsubmit="createNewUser(event)">
         <label>Nama Lengkap<input id="new_name" required></label>
         <label>Username<input id="new_username" required></label>
-        <label>Password<input type="password" id="new_password" required minlength="6"></label>
+        <label>Password<input type="text" id="new_password" required minlength="6" placeholder="Minimal 6 karakter"></label>
         <label>Role<select id="new_role">
           <option value="REQUESTER">Pemohon</option>
           <option value="HEAD_DEPT">Kepala Departemen</option>
@@ -523,33 +498,111 @@ function pageUsers() {
       </form>
     </section>
   </div>
-  <section class="panel"><div class="panel-head"><h2>Daftar Pengguna</h2></div><div class="table-wrap"><table><thead><tr><th>Nama</th><th>Username</th><th>Role</th><th>Departemen</th><th>Aksi</th></tr></thead><tbody>
-    ${rows.map(([uid, u]) => `<tr><td>${esc(u.name)}</td><td><strong>${esc(u.username)}</strong></td><td><span class="badge blue">${ROLES[u.role]||u.role}</span></td><td>${u.department_id ? esc((S.departments[u.department_id]||{}).name||'—') : '— Global —'}</td><td><button class="btn btn-light btn-sm" onclick="editUser('${uid}')">Edit</button><button class="btn btn-danger btn-sm" onclick="deleteUser('${uid}')">Hapus</button></td></tr>`).join('')}
+  <section class="panel"><div class="panel-head"><h2>Daftar Pengguna</h2></div><div class="table-wrap"><table><thead><tr><th>Nama</th><th>Username</th><th>Password</th><th>Role</th><th>Departemen</th><th>Aksi</th></tr></thead><tbody>
+    ${rows.map(([uid, u]) => `<tr>
+      <td>${esc(u.name)}</td>
+      <td><strong>${esc(u.username)}</strong></td>
+      <td><span class="badge amber">${esc(u.plain_password || 'Tidak tersimpan')}</span></td>
+      <td><span class="badge blue">${ROLES[u.role]||u.role}</span></td>
+      <td>${u.department_id ? esc((S.departments[u.department_id]||{}).name||'—') : '— Global —'}</td>
+      <td>
+        <button class="btn btn-light btn-sm" onclick="editUser('${uid}')">Edit</button>
+        <button class="btn btn-warning btn-sm" onclick="resetUserPassword('${uid}')">Reset Pass</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteUser('${uid}')">Hapus</button>
+      </td>
+    </tr>`).join('')}
   </tbody></table></div></section>`;
 }
+
 async function createNewUser(e) {
   e.preventDefault(); const btn = e.target.querySelector('button'); btn.disabled = true;
   const uname = $('#new_username').value.toLowerCase();
+  const pw = $('#new_password').value;
+  
   try {
     const secApp = firebase.initializeApp(firebaseConfig, "Sec");
-    const cred = await secApp.auth().createUserWithEmailAndPassword(uname + FAKE_EMAIL_DOMAIN, $('#new_password').value);
-    await db.ref('users/' + cred.user.uid).set({ name: $('#new_name').value, username: uname, role: $('#new_role').value, department_id: $('#new_dept').value || null, is_active: true });
+    const cred = await secApp.auth().createUserWithEmailAndPassword(uname + FAKE_EMAIL_DOMAIN, pw);
+    
+    await db.ref('users/' + cred.user.uid).set({ 
+      name: $('#new_name').value, 
+      username: uname, 
+      plain_password: pw, 
+      role: $('#new_role').value, 
+      department_id: $('#new_dept').value || null, 
+      is_active: true 
+    });
+    
     await secApp.auth().signOut(); await secApp.delete();
     flash('Akun pengguna berhasil dibuat.'); e.target.reset();
-  } catch (err) { flash(err.message, 'error'); }
+  } catch (err) { 
+    if(err.code === 'auth/email-already-in-use') {
+      flash('Username sudah dipakai, gunakan username lain.', 'error');
+    } else {
+      flash(err.message, 'error'); 
+    }
+  }
   btn.disabled = false;
 }
+
 function editUser(uid) {
   const u = S.users[uid];
   $('#edit_uid').value = uid; $('#edit_username').value = u.username; $('#edit_name').value = u.name;
   $('#edit_role').value = u.role; $('#edit_dept').value = u.department_id || '';
   $('#editUserPanel').style.display = 'block'; window.scrollTo(0, 0);
 }
+
 async function updateUser(e) {
   e.preventDefault(); const id = $('#edit_uid').value;
   await db.ref('users/' + id).update({ name: $('#edit_name').value, role: $('#edit_role').value, department_id: $('#edit_dept').value || null });
   $('#editUserPanel').style.display = 'none'; renderApp(); flash('Data pengguna berhasil diperbarui.');
 }
+
+async function resetUserPassword(uid) {
+  const u = S.users[uid];
+  if (!u.plain_password) {
+    alert("Tidak bisa reset password karena password lama tidak tersimpan di database (kemungkinan user dibuat sebelum fitur ini ada). Silakan hapus dan buat ulang user.");
+    return;
+  }
+  
+  const newPw = prompt(`Masukkan password BARU untuk ${u.username} (minimal 6 karakter):`);
+  if (!newPw || newPw.length < 6) {
+    if (newPw !== null) alert("Password minimal 6 karakter.");
+    return;
+  }
+
+  try {
+    // Gunakan secondary app untuk login sebagai user tersebut
+    const resetAppName = "ResetApp_" + Date.now();
+    const resetApp = firebase.initializeApp(firebaseConfig, resetAppName);
+    const resetAuth = resetApp.auth();
+
+    // Login menggunakan password lama
+    const email = u.username + FAKE_EMAIL_DOMAIN;
+    const cred = await resetAuth.signInWithEmailAndPassword(email, u.plain_password);
+
+    // Update ke password baru
+    await cred.user.updatePassword(newPw);
+
+    // Logout dan hapus app
+    await resetAuth.signOut();
+    await resetApp.delete();
+
+    // Update DB
+    await db.ref('users/' + uid).update({ plain_password: newPw });
+    
+    flash(`Password untuk ${u.username} berhasil direset menjadi: ${newPw}`);
+    renderApp();
+
+  } catch (err) {
+    console.error(err);
+    if (err.code === 'auth/wrong-password') {
+      alert("Gagal reset: Password lama di database tidak cocok dengan Firebase Auth. (Mungkin password pernah diubah lewat konsol Firebase).");
+    } else {
+      alert("Gagal reset password: " + err.message);
+    }
+  }
+}
+
 async function deleteUser(uid) {
   if (uid === S.user.uid) return alert('Anda tidak bisa menghapus akun Anda sendiri.');
   if (!confirm('Hapus pengguna ini? Pengguna tidak akan bisa login lagi.')) return;
@@ -764,7 +817,6 @@ function pageWarehouse() {
     const items = wo.items || [];
     const isRevision = wo.status === 'PENDING_WAREHOUSE_APPROVAL';
     
-    // Default date to today
     const defaultDate = new Date().toISOString().split('T')[0];
     const pickupDate = wo.pickup_date ? new Date(wo.pickup_date).toISOString().split('T')[0] : defaultDate;
 
@@ -787,7 +839,6 @@ function pageWarehouse() {
           <tbody>
             ${items.map(it => {
               const item = S.items[it.item_id] || {item_name: 'Dihapus', stock: 0};
-              // Jika sedang revisi, tampilkan qty yang diajukan
               let actualQty = it.qty;
               if (wo.issued_items) {
                 const issued = wo.issued_items.find(x => x.item_id === it.item_id);
@@ -805,9 +856,8 @@ function pageWarehouse() {
 
         ${!isRevision ? `
         <div style="display:flex; gap:10px; justify-content:flex-end;">
-          <button type="submit" class="btn btn-primary" onclick="document.getElementById('action_mode').value='check'">Posting & Potong Stok</button>
+          <button type="submit" class="btn btn-primary">Posting & Potong Stok</button>
         </div>
-        <input type="hidden" id="action_mode" value="check">
         ` : ''}
       </form>
     </section>`;
@@ -820,9 +870,6 @@ async function processWarehouse(e, woId) {
   const pickupDateTs = new Date($('#pickup_date_'+woId).value).getTime();
   const notes = $('#pickup_notes_'+woId).value;
 
-  // Kumpulkan qty aktual dari form
-  const inputs = document.querySelectorAll(`#pickup_date_${woId}`).closest ? document.querySelectorAll('.actual-qty') : []; // Fallback
-  // Karena form di-render ulang, kita perlu selector yang lebih spesifik
   const section = $('#pickup_date_' + woId).closest('section');
   const qtyInputs = section.querySelectorAll('.actual-qty');
   
@@ -839,7 +886,6 @@ async function processWarehouse(e, woId) {
   });
 
   if (isMatch) {
-    // JIKA COCOK: Potong stok langsung
     let err = false;
     for (const it of issuedItems) {
       const item = S.items[it.item_id];
@@ -870,7 +916,6 @@ async function processWarehouse(e, woId) {
     flash('Barang berhasil dikeluarkan. Stok terpotong.');
 
   } else {
-    // JIKA TIDAK COCOK: Ajukan Revisi
     if(!confirm('Qty berbeda dengan Work Order. Ajukan Revisi ke Kepala Engineering dan Direktur?')) return;
 
     await db.ref('workorders/' + woId).update({
@@ -880,7 +925,6 @@ async function processWarehouse(e, woId) {
       variance_notes: notes
     });
 
-    // Buat Approval Log untuk Eng Manager
     const engMgrUid = Object.keys(S.users).find(uid => S.users[uid].role === 'ENG_MANAGER');
     if(engMgrUid) {
       await db.ref('approval_logs/' + uid()).set({ 
@@ -954,17 +998,15 @@ async function decideVariance(logId, dec) {
   await db.ref('approval_logs/' + logId).update({ decision: dec, decided_at: now() });
   
   if (dec === 'REJECTED') {
-    // Jika ditolak, kembalikan status ke OPEN agar gudang bisa merevisi
     await db.ref('workorders/' + log.wo_id).update({ 
       status: 'OPEN', 
-      issued_items: null, // Hapus usulan gudang
+      issued_items: null, 
       variance_notes: null
     });
     return flash('Revisi ditolak. Gudang harus mengulang penyiapan barang.', 'error');
   }
 
   if (log.stage === 'ENG_MANAGER') {
-    // Lanjut ke Direktur
     const nextUid = Object.keys(S.users).find(uid => S.users[uid].role === 'DIRECTOR');
     if(nextUid) {
       await db.ref('approval_logs/' + uid()).set({ 
@@ -977,9 +1019,7 @@ async function decideVariance(logId, dec) {
     }
   } 
   else if (log.stage === 'DIRECTOR') {
-    // Final Approve: Potong Stok Sesuai Revisi
     const issuedItems = wo.issued_items || [];
-    
     for (const it of issuedItems) {
       const item = S.items[it.item_id];
       const newStock = item.stock - it.qty;
@@ -993,7 +1033,7 @@ async function decideVariance(logId, dec) {
 
     await db.ref('workorders/' + log.wo_id).update({ 
       status: 'IN_PROGRESS',
-      items: [] // Kosongkan karena sudah diambil
+      items: [] 
     });
     flash('Revisi disetujui Direktur. Stok dipotong & barang siap diambil.');
   }
@@ -1050,7 +1090,7 @@ function pageWorkOrders() {
   ${rows.map(([id, wo]) => {
     const req = S.requests[wo.request_id] || {};
     const items = wo.items || [];
-    const issuedItems = wo.issued_items || []; // Barang yg sudah diambil gudang
+    const issuedItems = wo.issued_items || []; 
     const issuedHistory = Object.entries(S.stock_history)
       .filter(([hid, h]) => h.ref_no === wo.wo_no && h.qty_out > 0)
       .sort((a,b) => b[1].timestamp - a[1].timestamp);
@@ -1233,7 +1273,6 @@ async function reverseWOTransaction(historyId, itemId, qty, woId) {
     items.push({ item_id: itemId, qty: qty });
   }
 
-  // Kembalikan status WO ke OPEN agar gudang bisa memproses ulang
   await db.ref('workorders/' + woId).update({ 
     items: items,
     status: 'OPEN',
