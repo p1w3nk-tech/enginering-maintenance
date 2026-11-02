@@ -404,7 +404,113 @@ function importItems(e) {
 
   const ext = file.name.split('.').pop().toLowerCase();
 
-  // --- Jika file Excel (.xlsx / .xls) → pakai SheetJS ---
+  // ====== PROSES INTI (dipakai untuk CSV & Excel) ======
+  async function prosesImport(rows) {
+    // Snapshot nama & kode yang SUDAH ADA di database (case-insensitive)
+    const existingNames = new Set(
+      Object.values(S.items).map(i => (i.item_name || '').trim().toLowerCase())
+    );
+    const existingCodes = new Set(
+      Object.values(S.items).map(i => (i.item_code || '').trim().toLowerCase())
+    );
+
+    // Set untuk mendeteksi duplikat DI DALAM file
+    const seenNames = new Set();
+    const seenCodes = new Set();
+
+    let sukses = 0;
+    const duplikatDb = [];      // nama sudah ada di database
+    const duplikatKodeDb = [];  // kode sudah ada di database
+    const duplikatFile = [];    // nama/kode dobel dalam file
+    const tidakValid = [];      // baris tanpa kode/nama
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const baris = i + 2; // +2 karena baris 1 = header
+
+      // Normalisasi nama kolom (toleran berbagai variasi)
+      const code = (row.item_code || row.ItemCode || row.KODE || row.kode || row['Kode'] || '').toString().trim();
+      const name = (row.item_name || row.ItemName || row.NAMA || row.nama || row['Nama Barang'] || '').toString().trim();
+      const unit = (row.unit || row.UNIT || row.Satuan || row.satuan || row['Unit'] || 'PCS').toString().trim() || 'PCS';
+
+      // Validasi wajib
+      if (!code || !name) {
+        tidakValid.push(`Baris ${baris}: kode/nama kosong`);
+        continue;
+      }
+
+      const nameKey = name.toLowerCase();
+      const codeKey = code.toLowerCase();
+
+      // Cek duplikat dalam file
+      if (seenNames.has(nameKey)) {
+        duplikatFile.push(`Baris ${baris}: "${name}" (nama dobel di file)`);
+        continue;
+      }
+      if (seenCodes.has(codeKey)) {
+        duplikatFile.push(`Baris ${baris}: "${code}" (kode dobel di file)`);
+        continue;
+      }
+
+      // Cek duplikat terhadap database
+      if (existingNames.has(nameKey)) {
+        duplikatDb.push(`Baris ${baris}: "${name}"`);
+        seenNames.add(nameKey); // tetap catat agar baris berikutnya dianggap dobel di file
+        continue;
+      }
+      if (existingCodes.has(codeKey)) {
+        duplikatKodeDb.push(`Baris ${baris}: "${code}"`);
+        seenCodes.add(codeKey);
+        continue;
+      }
+
+      // Lolos semua cek → simpan
+      await db.ref('items/' + uid()).set({
+        item_code: code,
+        item_name: name,
+        unit: unit,
+        stock: 0
+      });
+
+      // Daftarkan ke set agar baris berikutnya di file ini terdeteksi dobel
+      seenNames.add(nameKey);
+      seenCodes.add(codeKey);
+      existingNames.add(nameKey);
+      existingCodes.add(codeKey);
+      sukses++;
+    }
+
+    // ====== TAMPILKAN RINGKASAN ======
+    let pesan = `✅ Import selesai: ${sukses} barang ditambahkan.`;
+
+    if (duplikatDb.length > 0) {
+      pesan += `\n\n⚠️ DILEWATI — Nama barang sudah ada di database (${duplikatDb.length}):\n• ` + duplikatDb.join('\n• ');
+    }
+    if (duplikatKodeDb.length > 0) {
+      pesan += `\n\n⚠️ DILEWATI — Kode barang sudah ada di database (${duplikatKodeDb.length}):\n• ` + duplikatKodeDb.join('\n• ');
+    }
+    if (duplikatFile.length > 0) {
+      pesan += `\n\n⚠️ DILEWATI — Duplikat di dalam file (${duplikatFile.length}):\n• ` + duplikatFile.join('\n• ');
+    }
+    if (tidakValid.length > 0) {
+      pesan += `\n\n❌ TIDAK VALID (${tidakValid.length}):\n• ` + tidakValid.join('\n• ');
+    }
+
+    if (sukses === 0) {
+      alert(pesan);
+      flash('Import gagal total — semua baris duplikat/tidak valid.', 'error');
+    } else if (duplikatDb.length + duplikatKodeDb.length + duplikatFile.length + tidakValid.length > 0) {
+      alert(pesan);
+      flash(`Import selesai: ${sukses} masuk, ${duplikatDb.length + duplikatKodeDb.length + duplikatFile.length + tidakValid.length} dilewati.`);
+    } else {
+      flash(pesan);
+    }
+
+    renderApp();
+    e.target.value = ''; // reset input supaya bisa upload file yang sama lagi
+  }
+
+  // ====== BACA FILE EXCEL (.xlsx / .xls) ======
   if (ext === 'xlsx' || ext === 'xls') {
     const reader = new FileReader();
     reader.onload = async function(evt) {
@@ -413,31 +519,7 @@ function importItems(e) {
         const workbook = XLSX.read(data, { type: 'array' });
         const sheet = workbook.Sheets[workbook.SheetNames[0]];
         const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
-
-        let count = 0;
-        for (const row of rows) {
-          // Normalisasi nama kolom (case-insensitive & trim)
-          const code = (row.item_code || row.ItemCode || row.KODE || row.kode || '').toString().trim();
-          const name = (row.item_name || row.ItemName || row.NAMA || row.nama || '').toString().trim();
-          const unit = (row.unit || row.UNIT || row.Satuan || row.satuan || 'PCS').toString().trim() || 'PCS';
-
-          if (code && name) {
-            await db.ref('items/' + uid()).set({
-              item_code: code,
-              item_name: name,
-              unit: unit,
-              stock: 0
-            });
-            count++;
-          }
-        }
-
-        if (count === 0) {
-          flash('Tidak ada data valid. Pastikan header kolom: item_code, item_name, unit', 'error');
-        } else {
-          flash(`Berhasil import ${count} data barang dari Excel.`);
-        }
-        renderApp();
+        await prosesImport(rows);
       } catch (err) {
         console.error(err);
         flash('Gagal membaca file Excel: ' + err.message, 'error');
@@ -447,28 +529,12 @@ function importItems(e) {
     return;
   }
 
-  // --- Jika CSV → tetap pakai PapaParse ---
+  // ====== BACA FILE CSV ======
   Papa.parse(file, {
     header: true,
     skipEmptyLines: true,
     complete: async function(results) {
-      let count = 0;
-      for (const row of results.data) {
-        const code = (row.item_code || '').toString().trim();
-        const name = (row.item_name || '').toString().trim();
-        const unit = (row.unit || 'PCS').toString().trim();
-        if (code && name) {
-          await db.ref('items/' + uid()).set({
-            item_code: code,
-            item_name: name,
-            unit: unit || 'PCS',
-            stock: 0
-          });
-          count++;
-        }
-      }
-      renderApp();
-      flash(`Berhasil import ${count} data barang dari CSV.`);
+      await prosesImport(results.data);
     },
     error: function(err) {
       flash('Gagal membaca CSV: ' + err.message, 'error');
