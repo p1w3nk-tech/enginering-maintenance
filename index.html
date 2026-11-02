@@ -561,6 +561,8 @@ function pageIncoming() {
   }
 
   return `<div class="page-head"><div><div class="eyebrow">INVENTORY</div><h1>Penerimaan Barang (Stok Masuk)</h1></div></div>
+    
+    <!-- ====== FORM INPUT MANUAL ====== -->
     <section class="panel"><div class="panel-head"><h2>${isEdit ? 'Edit' : 'Input'} Barang Masuk</h2></div>
       <form class="form-grid" onsubmit="saveIncoming(event)">
         <input type="hidden" id="in_history_id" value="${S.editingIncoming||''}">
@@ -583,6 +585,18 @@ function pageIncoming() {
         </div>
       </form>
     </section>
+
+    <!-- ====== PANEL IMPORT EXCEL/CSV ====== -->
+    <section class="panel no-print">
+      <div class="panel-head"><h2>📥 Import Penerimaan (Excel/CSV)</h2></div>
+      <p class="hint">
+        Format kolom: <code>item_code</code> ATAU <code>item_name</code>, lalu <code>qty_in</code>, <code>ref_no</code>, <code>tanggal</code> (opsional, format YYYY-MM-DD), <code>keterangan</code> (opsional).
+        <br>Barang harus <strong>sudah terdaftar di Master Barang</strong>. Jika tidak ditemukan, baris akan dilewati.
+      </p>
+      <input type="file" accept=".csv,.xlsx,.xls" onchange="importIncoming(event)">
+    </section>
+
+    <!-- ====== RIWAYAT PENERIMAAN ====== -->
     <section class="panel">
       <div class="panel-head"><h2>Riwayat Penerimaan Barang</h2></div>
       <div class="table-wrap"><table><thead><tr><th>Tanggal</th><th>Nama Barang</th><th>Qty Masuk</th><th>No. Ref</th><th>Aksi</th></tr></thead><tbody>
@@ -598,6 +612,137 @@ function pageIncoming() {
         </tr>`).join('') || '<tr><td colspan="5" class="empty">Belum ada riwayat penerimaan.</td></tr>'}
       </tbody></table></div>
     </section>`;
+}
+async function importIncoming(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  const ext = file.name.split('.').pop().toLowerCase();
+
+  async function prosesImport(rows) {
+    // Index barang by code & name (case-insensitive)
+    const byCode = {};
+    const byName = {};
+    Object.entries(S.items).forEach(([iid, it]) => {
+      if (it.item_code) byCode[it.item_code.trim().toLowerCase()] = { id: iid, item: it };
+      if (it.item_name) byName[it.item_name.trim().toLowerCase()] = { id: iid, item: it };
+    });
+
+    let sukses = 0;
+    const gagalTidakDitemukan = [];
+    const gagalQty = [];
+    const gagalRef = [];
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
+      const baris = i + 2;
+
+      const codeRaw = (row.item_code || row.ItemCode || row.KODE || row.kode || row['Kode Barang'] || '').toString().trim();
+      const nameRaw = (row.item_name || row.ItemName || row.NAMA || row.nama || row['Nama Barang'] || '').toString().trim();
+      const qtyRaw  = (row.qty_in || row.QtyIn || row.QTY || row.qty || row['Qty Masuk'] || row['Jumlah'] || '').toString().trim();
+      const refRaw  = (row.ref_no || row.RefNo || row.REF || row.ref || row['No PO'] || row['No. PO'] || row['Surat Jalan'] || '').toString().trim();
+      const dateRaw = (row.tanggal || row.Tanggal || row.date || row.Date || '').toString().trim();
+      const noteRaw = (row.keterangan || row.Keterangan || row.notes || row.Notes || row.description || '').toString().trim();
+
+      // Cari barang di master
+      let found = null;
+      if (codeRaw) found = byCode[codeRaw.toLowerCase()] || null;
+      if (!found && nameRaw) found = byName[nameRaw.toLowerCase()] || null;
+
+      if (!found) {
+        gagalTidakDitemukan.push(`Baris ${baris}: ${codeRaw || nameRaw || '(kosong)'}`);
+        continue;
+      }
+
+      const qty = parseFloat(qtyRaw);
+      if (isNaN(qty) || qty <= 0) {
+        gagalQty.push(`Baris ${baris}: ${found.item.item_name} (qty="${qtyRaw}")`);
+        continue;
+      }
+
+      if (!refRaw) {
+        gagalRef.push(`Baris ${baris}: ${found.item.item_name} (ref_no kosong)`);
+        continue;
+      }
+
+      let ts = Date.now();
+      if (dateRaw) {
+        const parsed = new Date(dateRaw);
+        if (!isNaN(parsed.getTime())) ts = parsed.getTime();
+      }
+
+      const item = found.item;
+      const newStock = (item.stock || 0) + qty;
+
+      await db.ref('items/' + found.id).update({ stock: newStock });
+      await db.ref('stock_history/' + uid()).set({
+        item_id: found.id,
+        item_name: item.item_name,
+        qty_in: qty,
+        qty_out: 0,
+        balance_after: newStock,
+        ref_no: refRaw,
+        description: noteRaw || 'Penerimaan Barang (Import)',
+        timestamp: ts,
+        user: S.user.name
+      });
+
+      item.stock = newStock; // update cache lokal
+      sukses++;
+    }
+
+    let pesan = `✅ Import selesai: ${sukses} penerimaan dicatat.`;
+    if (gagalTidakDitemukan.length > 0)
+      pesan += `\n\n⚠️ Barang tidak ditemukan di Master (${gagalTidakDitemukan.length}):\n• ` + gagalTidakDitemukan.join('\n• ');
+    if (gagalQty.length > 0)
+      pesan += `\n\n⚠️ Qty tidak valid (${gagalQty.length}):\n• ` + gagalQty.join('\n• ');
+    if (gagalRef.length > 0)
+      pesan += `\n\n⚠️ Ref/No PO kosong (${gagalRef.length}):\n• ` + gagalRef.join('\n• ');
+
+    const totalGagal = gagalTidakDitemukan.length + gagalQty.length + gagalRef.length;
+
+    if (sukses === 0) {
+      alert(pesan);
+      flash('Import gagal — semua baris ditolak.', 'error');
+    } else if (totalGagal > 0) {
+      alert(pesan);
+      flash(`Import selesai: ${sukses} masuk, ${totalGagal} dilewati.`);
+    } else {
+      flash(pesan);
+    }
+
+    renderApp();
+    e.target.value = '';
+  }
+
+  if (ext === 'xlsx' || ext === 'xls') {
+    const reader = new FileReader();
+    reader.onload = async function(evt) {
+      try {
+        const data = new Uint8Array(evt.target.result);
+        const wb = XLSX.read(data, { type: 'array' });
+        const sheet = wb.Sheets[wb.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+        await prosesImport(rows);
+      } catch (err) {
+        console.error(err);
+        flash('Gagal membaca file Excel: ' + err.message, 'error');
+      }
+    };
+    reader.readAsArrayBuffer(file);
+    return;
+  }
+
+  Papa.parse(file, {
+    header: true,
+    skipEmptyLines: true,
+    complete: async function(results) {
+      await prosesImport(results.data);
+    },
+    error: function(err) {
+      flash('Gagal membaca CSV: ' + err.message, 'error');
+    }
+  });
 }
 
 function resolveIncomingItemId(inputEl) {
