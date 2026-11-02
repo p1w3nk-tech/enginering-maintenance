@@ -376,7 +376,7 @@ function pageItems() {
       </section>
       <section class="panel"><div class="panel-head"><h2>📥 Import Excel/CSV</h2></div>
         <p class="hint">Format kolom: <code>item_code, item_name, unit</code></p>
-        <input type="file" accept=".csv" onchange="importItems(event)">
+        <input type="file" accept=".csv,.xlsx,.xls" onchange="importItems(event)">
       </section>
     </div>
     <section class="panel"><div class="table-wrap"><table><thead><tr><th>Kode</th><th>Nama</th><th>Satuan</th><th class="num">Stok</th><th>Aksi</th></tr></thead><tbody>
@@ -401,17 +401,77 @@ async function delItem(id) { if(confirm('Hapus barang ini?')) { await db.ref('it
 function importItems(e) {
   const file = e.target.files[0];
   if (!file) return;
+
+  const ext = file.name.split('.').pop().toLowerCase();
+
+  // --- Jika file Excel (.xlsx / .xls) → pakai SheetJS ---
+  if (ext === 'xlsx' || ext === 'xls') {
+    const reader = new FileReader();
+    reader.onload = async function(evt) {
+      try {
+        const data = new Uint8Array(evt.target.result);
+        const workbook = XLSX.read(data, { type: 'array' });
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+
+        let count = 0;
+        for (const row of rows) {
+          // Normalisasi nama kolom (case-insensitive & trim)
+          const code = (row.item_code || row.ItemCode || row.KODE || row.kode || '').toString().trim();
+          const name = (row.item_name || row.ItemName || row.NAMA || row.nama || '').toString().trim();
+          const unit = (row.unit || row.UNIT || row.Satuan || row.satuan || 'PCS').toString().trim() || 'PCS';
+
+          if (code && name) {
+            await db.ref('items/' + uid()).set({
+              item_code: code,
+              item_name: name,
+              unit: unit,
+              stock: 0
+            });
+            count++;
+          }
+        }
+
+        if (count === 0) {
+          flash('Tidak ada data valid. Pastikan header kolom: item_code, item_name, unit', 'error');
+        } else {
+          flash(`Berhasil import ${count} data barang dari Excel.`);
+        }
+        renderApp();
+      } catch (err) {
+        console.error(err);
+        flash('Gagal membaca file Excel: ' + err.message, 'error');
+      }
+    };
+    reader.readAsArrayBuffer(file);
+    return;
+  }
+
+  // --- Jika CSV → tetap pakai PapaParse ---
   Papa.parse(file, {
-    header: true, skipEmptyLines: true,
+    header: true,
+    skipEmptyLines: true,
     complete: async function(results) {
       let count = 0;
       for (const row of results.data) {
-        if (row.item_code && row.item_name) {
-          await db.ref('items/' + uid()).set({ item_code: row.item_code, item_name: row.item_name, unit: row.unit||'PCS', stock: 0 });
+        const code = (row.item_code || '').toString().trim();
+        const name = (row.item_name || '').toString().trim();
+        const unit = (row.unit || 'PCS').toString().trim();
+        if (code && name) {
+          await db.ref('items/' + uid()).set({
+            item_code: code,
+            item_name: name,
+            unit: unit || 'PCS',
+            stock: 0
+          });
           count++;
         }
       }
-      renderApp(); flash(`Berhasil import ${count} data barang.`);
+      renderApp();
+      flash(`Berhasil import ${count} data barang dari CSV.`);
+    },
+    error: function(err) {
+      flash('Gagal membaca CSV: ' + err.message, 'error');
     }
   });
 }
